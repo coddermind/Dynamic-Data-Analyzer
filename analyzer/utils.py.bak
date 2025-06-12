@@ -1,0 +1,2632 @@
+import pandas as pd
+import numpy as np
+import os
+import uuid
+import matplotlib.pyplot as plt
+import seaborn as sns
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import json
+import base64
+import plotly
+from io import BytesIO
+from django.conf import settings
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler, LabelEncoder, OneHotEncoder
+from sklearn.decomposition import PCA
+from sklearn.feature_selection import VarianceThreshold, SelectKBest, f_classif, f_regression
+from scipy.stats import gaussian_kde
+
+# Add NumpyEncoder class
+class NumpyEncoder(json.JSONEncoder):
+    """Custom JSON encoder for NumPy types."""
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        if isinstance(obj, (np.complex_, np.complex64, np.complex128)):
+            return str(obj)
+        if np.isnan(obj):
+            return None
+        if np.isinf(obj):
+            return None
+        if isinstance(obj, (pd.Timestamp, np.datetime64)):
+            return str(obj)
+        try:
+            return super(NumpyEncoder, self).default(obj)
+        except TypeError:
+            # Fallback for any other numpy types
+            return str(obj)
+
+def load_dataset(file_path, file_type):
+    """Load dataset from file."""
+    try:
+        if file_type == 'csv':
+            try:
+                # Try with default settings first
+                df = pd.read_csv(file_path)
+            except UnicodeDecodeError:
+                # If that fails, try different encodings
+                df = pd.read_csv(file_path, encoding='latin1')
+            except Exception as e:
+                print(f"Error reading CSV with standard options: {str(e)}")
+                # Try with more forgiving settings
+                df = pd.read_csv(file_path, encoding='latin1', on_bad_lines='skip')
+        elif file_type == 'excel':
+            try:
+                # Try standard approach first
+                df = pd.read_excel(file_path)
+            except Exception as e:
+                print(f"Error reading Excel with standard options: {str(e)}")
+                # Try with more options
+                df = pd.read_excel(file_path, engine='openpyxl')
+        else:
+            raise ValueError(f"Unsupported file type: {file_type}")
+        
+        # Make column names string type to avoid problems with numeric/special columns
+        df.columns = df.columns.astype(str)
+        
+        # Check if file is empty
+        if df.empty:
+            raise ValueError("The dataset is empty")
+        
+        return df
+    except Exception as e:
+        print(f"Error loading dataset: {str(e)}")
+        raise ValueError(f"Failed to load dataset: {str(e)}")
+
+def get_column_types(df):
+    """Get column data types."""
+    column_types = {}
+    
+    for col in df.columns:
+        try:
+            if pd.api.types.is_numeric_dtype(df[col]):
+                # Check if it's binary (0/1 values only)
+                unique_vals = set(df[col].dropna().unique())
+                if unique_vals == {0, 1} or unique_vals == {0.0, 1.0} or unique_vals == {'0', '1'}:
+                    column_types[col] = 'binary'
+                else:
+                    column_types[col] = 'numeric'
+            elif pd.api.types.is_datetime64_dtype(df[col]):
+                column_types[col] = 'datetime'
+            else:
+                # For object/string columns, check if they're categorical
+                nunique = df[col].nunique()
+                if nunique < 10 or (len(df) > 0 and nunique / len(df) < 0.05):  # Categorical if few unique values or small ratio
+                    column_types[col] = 'categorical'
+                else:
+                    column_types[col] = 'text'
+        except Exception as e:
+            print(f"Error determining type for column {col}: {str(e)}")
+            # Default to text type for problematic columns
+            column_types[col] = 'text'
+    
+    return column_types
+
+def handle_missing_values(df, strategy, fill_value=None, column_strategies=None):
+    """
+    Handle missing values in the dataframe.
+    
+    Args:
+        df: The dataframe to process
+        strategy: The global strategy to apply to columns without specific strategies
+        fill_value: The global fill value for constant strategy
+        column_strategies: Dict mapping column names to their specific preprocessing settings
+    
+    Returns:
+        Processed dataframe
+    """
+    # Make a copy to avoid modifying the original
+    df = df.copy()
+    
+    total_missing = df.isna().sum().sum()
+    print(f"MISSING VALUES - Before processing: {total_missing} total missing values")
+    
+    if total_missing == 0:
+        print("No missing values to handle, skipping")
+        return df
+    
+    # No strategy provided and no column-specific strategies
+    if not strategy and not column_strategies:
+        print("No missing value strategy provided, skipping")
+        return df
+    
+    # Process any column-specific strategies first
+    if column_strategies:
+        processed_columns = []
+        print("Processing column-specific missing value strategies:")
+        
+        for col, col_settings in column_strategies.items():
+            # Skip columns that don't exist
+            if col not in df.columns:
+                print(f"Column '{col}' not found in DataFrame, skipping")
+                continue
+                
+            # Get column-specific strategy
+            col_strategy = col_settings.get('missing_values_strategy')
+            
+            # Skip if no strategy or if strategy is 'global'
+            if not col_strategy or col_strategy == 'global':
+                print(f"  Column '{col}': Using global strategy ({strategy or 'none'})")
+                continue
+            
+            # Skip columns without missing values
+            missing_count = df[col].isna().sum()
+            if missing_count == 0:
+                print(f"  Column '{col}': No missing values, skipping")
+                continue
+                
+            # Process this column with its specific strategy
+            print(f"  Column '{col}': {missing_count} missing values with strategy '{col_strategy}'")
+            processed_columns.append(col)
+            
+            # Get fill value for column if provided
+            col_fill_value = col_settings.get('fill_value')
+            if not col_fill_value and col_strategy == 'constant':
+                # Fall back to global fill value for constant strategy
+                col_fill_value = fill_value
+                print(f"    Using global fill value: {fill_value}")
+            
+            # Apply the appropriate strategy for this column
+            if col_strategy == 'drop':
+                print(f"    Marking for row dropping due to missing values")
+                # We'll handle this at the end
+                continue
+                
+            elif col_strategy == 'mean' and pd.api.types.is_numeric_dtype(df[col]):
+                if df[col].dropna().empty:
+                    print(f"    Cannot calculate mean for column '{col}' - all values are missing")
+                    continue
+                    
+                mean_value = df[col].mean()
+                print(f"    Filling {missing_count} missing values with mean: {mean_value}")
+                before_na_count = df[col].isna().sum()
+                df[col] = df[col].fillna(mean_value)
+                after_na_count = df[col].isna().sum()
+                print(f"    Before: {before_na_count} NAs, After: {after_na_count} NAs")
+                
+            elif col_strategy == 'median' and pd.api.types.is_numeric_dtype(df[col]):
+                if df[col].dropna().empty:
+                    print(f"    Cannot calculate median for column '{col}' - all values are missing")
+                    continue
+                    
+                median_value = df[col].median()
+                print(f"    Filling {missing_count} missing values with median: {median_value}")
+                before_na_count = df[col].isna().sum()
+                df[col] = df[col].fillna(median_value)
+                after_na_count = df[col].isna().sum()
+                print(f"    Before: {before_na_count} NAs, After: {after_na_count} NAs")
+                
+            elif col_strategy == 'mode':
+                if df[col].dropna().empty:
+                    print(f"    Cannot calculate mode for column '{col}' - all values are missing")
+                    continue
+                    
+                if not df[col].mode().empty:
+                    mode_value = df[col].mode()[0]
+                    print(f"    Filling {missing_count} missing values with mode: {mode_value}")
+                    before_na_count = df[col].isna().sum()
+                    df[col] = df[col].fillna(mode_value)
+                    after_na_count = df[col].isna().sum()
+                    print(f"    Before: {before_na_count} NAs, After: {after_na_count} NAs")
+                    
+            elif col_strategy == 'constant':
+                print(f"    Filling {missing_count} missing values with constant: {col_fill_value}")
+                before_na_count = df[col].isna().sum()
+                df[col] = df[col].fillna(col_fill_value)
+                after_na_count = df[col].isna().sum()
+                print(f"    Before: {before_na_count} NAs, After: {after_na_count} NAs")
+                
+            elif col_strategy == 'ffill':
+                print(f"    Forward filling {missing_count} missing values")
+                before_na_count = df[col].isna().sum()
+                df[col] = df[col].ffill()
+                after_na_count = df[col].isna().sum()
+                print(f"    Before: {before_na_count} NAs, After: {after_na_count} NAs")
+                
+            elif col_strategy == 'bfill':
+                print(f"    Backward filling {missing_count} missing values")
+                before_na_count = df[col].isna().sum()
+                df[col] = df[col].bfill()
+                after_na_count = df[col].isna().sum()
+                print(f"    Before: {before_na_count} NAs, After: {after_na_count} NAs")
+        
+        # Now apply the global strategy to any columns that weren't specifically processed
+        if strategy:
+            remaining_columns = [col for col in df.columns if col not in processed_columns]
+            missing_in_remaining = df[remaining_columns].isna().sum().sum()
+            
+            if missing_in_remaining > 0:
+                print(f"\nApplying global strategy '{strategy}' to remaining {len(remaining_columns)} columns with {missing_in_remaining} missing values")
+                
+                # Create a new dataframe with just the remaining columns
+                remaining_df = df[remaining_columns].copy()
+                
+                if strategy == 'drop':
+                    # Create a mask for rows to keep
+                    mask = ~remaining_df.isna().any(axis=1)
+                    rows_to_drop = (~mask).sum()
+                    if rows_to_drop > 0:
+                        print(f"  Dropping {rows_to_drop} rows with missing values in remaining columns")
+                        df = df[mask].copy()
+                    else:
+                        print("  No rows to drop in remaining columns")
+                        
+                elif strategy == 'mean':
+                    numeric_cols = remaining_df.select_dtypes(include=['number']).columns
+                    for col in numeric_cols:
+                        missing_count = remaining_df[col].isna().sum()
+                        if missing_count > 0:
+                            mean_value = remaining_df[col].mean()
+                            print(f"  Filling {missing_count} missing values in column '{col}' with mean: {mean_value}")
+                            df[col] = df[col].fillna(mean_value)
+                            
+                elif strategy == 'median':
+                    numeric_cols = remaining_df.select_dtypes(include=['number']).columns
+                    for col in numeric_cols:
+                        missing_count = remaining_df[col].isna().sum()
+                        if missing_count > 0:
+                            median_value = remaining_df[col].median()
+                            print(f"  Filling {missing_count} missing values in column '{col}' with median: {median_value}")
+                            df[col] = df[col].fillna(median_value)
+                            
+                elif strategy == 'mode':
+                    for col in remaining_columns:
+                        missing_count = remaining_df[col].isna().sum()
+                        if missing_count > 0 and not remaining_df[col].mode().empty:
+                            mode_value = remaining_df[col].mode()[0]
+                            print(f"  Filling {missing_count} missing values in column '{col}' with mode: {mode_value}")
+                            df[col] = df[col].fillna(mode_value)
+                            
+                elif strategy == 'constant':
+                    for col in remaining_columns:
+                        missing_count = remaining_df[col].isna().sum()
+                        if missing_count > 0:
+                            print(f"  Filling {missing_count} missing values in column '{col}' with constant: {fill_value}")
+                            df[col] = df[col].fillna(fill_value)
+                            
+                elif strategy == 'ffill':
+                    for col in remaining_columns:
+                        missing_count = remaining_df[col].isna().sum()
+                        if missing_count > 0:
+                            print(f"  Forward filling {missing_count} missing values in column '{col}'")
+                            df[col] = df[col].ffill()
+                            
+                elif strategy == 'bfill':
+                    for col in remaining_columns:
+                        missing_count = remaining_df[col].isna().sum()
+                        if missing_count > 0:
+                            print(f"  Backward filling {missing_count} missing values in column '{col}'")
+                            df[col] = df[col].bfill()
+    
+    # If no column-specific strategies, apply global strategy to all columns
+    elif strategy:
+        if strategy == 'drop':
+            print(f"Applying global DROP strategy")
+            rows_before = len(df)
+            df = df.dropna()
+            rows_dropped = rows_before - len(df)
+            print(f"Dropped {rows_dropped} rows with missing values")
+            
+        elif strategy == 'mean':
+            print(f"Applying global MEAN strategy")
+            numeric_cols = df.select_dtypes(include=['number']).columns
+            for col in numeric_cols:
+                missing_count = df[col].isna().sum()
+                if missing_count > 0:
+                    print(f"  Filling {missing_count} missing values in column '{col}' with mean: {df[col].mean()}")
+                    df[col] = df[col].fillna(df[col].mean())
+                    
+        elif strategy == 'median':
+            print(f"Applying global MEDIAN strategy")
+            numeric_cols = df.select_dtypes(include=['number']).columns
+            for col in numeric_cols:
+                missing_count = df[col].isna().sum()
+                if missing_count > 0:
+                    print(f"  Filling {missing_count} missing values in column '{col}' with median: {df[col].median()}")
+                    df[col] = df[col].fillna(df[col].median())
+                    
+        elif strategy == 'mode':
+            print(f"Applying global MODE strategy")
+            for col in df.columns:
+                missing_count = df[col].isna().sum()
+                if missing_count > 0 and not df[col].mode().empty:
+                    mode_value = df[col].mode()[0]
+                    print(f"  Filling {missing_count} missing values in column '{col}' with mode: {mode_value}")
+                    df[col] = df[col].fillna(mode_value)
+                    
+        elif strategy == 'constant':
+            print(f"Applying global CONSTANT strategy with value: {fill_value}")
+            for col in df.columns:
+                missing_count = df[col].isna().sum()
+                if missing_count > 0:
+                    print(f"  Filling {missing_count} missing values in column '{col}' with constant: {fill_value}")
+            df = df.fillna(fill_value)
+            
+        elif strategy == 'ffill':
+            print(f"Applying global FORWARD FILL strategy")
+            for col in df.columns:
+                missing_count = df[col].isna().sum()
+                if missing_count > 0:
+                    print(f"  Forward filling {missing_count} missing values in column '{col}'")
+            df = df.ffill()
+            
+        elif strategy == 'bfill':
+            print(f"Applying global BACKWARD FILL strategy")
+            for col in df.columns:
+                missing_count = df[col].isna().sum()
+                if missing_count > 0:
+                    print(f"  Backward filling {missing_count} missing values in column '{col}'")
+            df = df.bfill()
+    
+    # Handle 'drop' strategy for columns that specified it
+    if column_strategies:
+        cols_to_drop = []
+        for col, col_settings in column_strategies.items():
+            if col_settings.get('missing_values_strategy') == 'drop':
+                cols_to_drop.append(col)
+        
+        if cols_to_drop:
+            rows_before = len(df)
+            print(f"Dropping rows with missing values in columns: {cols_to_drop}")
+            df = df.dropna(subset=cols_to_drop)
+            rows_dropped = rows_before - len(df)
+            print(f"  Dropped {rows_dropped} rows")
+    
+    final_missing = df.isna().sum().sum()
+    print(f"MISSING VALUES - After processing: {final_missing} total missing values")
+    print(f"  Missing values filled: {total_missing - final_missing}")
+    
+    if final_missing > 0:
+        print(f"  Remaining missing values by column: {df.isna().sum()[df.isna().sum() > 0].to_dict()}")
+    
+    return df
+
+def encode_categorical(df, strategy, column_types, column_strategies=None):
+    """
+    Encode categorical variables in the dataframe.
+    
+    Args:
+        df: The dataframe to process
+        strategy: The global encoding strategy ('none', 'onehot', 'label')
+        column_types: Dict mapping column names to data types
+        column_strategies: Dict mapping column names to their specific preprocessing settings
+    
+    Returns:
+        Processed dataframe
+    """
+    # Make a copy to avoid modifying the original
+    df = df.copy()
+    
+    print(f"Starting categorical encoding with strategy: {strategy}")
+    
+    # Skip if global strategy is 'none' and all column strategies are also 'none'
+    if strategy == 'none' and (not column_strategies or all(
+            col_settings.get('encoding_strategy', 'global') in ['global', 'none'] 
+            for col, col_settings in column_strategies.items() if col in df.columns)):
+        print("No encoding needed (all strategies are 'none')")
+        return df
+    
+    # Identify categorical columns
+    categorical_cols = [col for col, type_ in column_types.items() 
+                       if type_ in ['categorical', 'binary'] and col in df.columns]
+    
+    if not categorical_cols:
+        print("No categorical columns found for encoding")
+        return df
+    
+    print(f"Found {len(categorical_cols)} categorical columns to potentially encode")
+    
+    # For each categorical column, apply the appropriate encoding
+    for col in categorical_cols:
+        # Determine which strategy to use for this column
+        col_strategy = strategy
+        
+        if column_strategies and col in column_strategies:
+            col_settings = column_strategies[col]
+            col_encoding = col_settings.get('encoding_strategy', 'global')
+            
+            if col_encoding != 'global':
+                col_strategy = col_encoding
+            
+        # Skip columns with 'none' strategy
+        if col_strategy == 'none':
+            print(f"  Skipping encoding for column '{col}' (strategy: none)")
+            continue
+            
+        # Count of unique values
+        unique_count = df[col].nunique()
+        print(f"  Column '{col}' has {unique_count} unique values")
+            
+        # Handle NaN values before encoding
+        missing_count = df[col].isna().sum()
+        if missing_count > 0:
+            print(f"  Column '{col}' has {missing_count} missing values, filling with '_MISSING_' before encoding")
+            df[col] = df[col].fillna('_MISSING_')
+        
+        if col_strategy == 'label':
+            # Label encoding
+            try:
+                from sklearn.preprocessing import LabelEncoder
+                print(f"  Applying label encoding to column '{col}'")
+                # Get distribution of values before encoding
+                value_counts = df[col].value_counts().head(5).to_dict()
+                print(f"    Top values before encoding: {value_counts}")
+                
+                le = LabelEncoder()
+                df[col] = le.fit_transform(df[col].astype(str))
+                
+                # Show the mapping for reference
+                mapping = {label: idx for idx, label in enumerate(le.classes_)}
+                top_mappings = {k: mapping[str(k)] for k in value_counts.keys() if str(k) in mapping}
+                print(f"    Mapping examples: {top_mappings}")
+                
+            except Exception as e:
+                print(f"    Error during label encoding: {str(e)}")
+            
+        elif col_strategy == 'onehot':
+            # One-hot encoding
+            try:
+                print(f"  Applying one-hot encoding to column '{col}'")
+                # Get number of unique values
+                print(f"    Creating {df[col].nunique()} new binary columns")
+                
+                # Store the column names before encoding
+                old_cols = set(df.columns)
+                
+                # Apply one-hot encoding
+                dummies = pd.get_dummies(df[col], prefix=col, drop_first=False)
+                # Drop the original column and add the dummy columns
+                df = pd.concat([df.drop(col, axis=1), dummies], axis=1)
+                
+                # Calculate new columns added
+                new_cols = set(df.columns) - old_cols
+                print(f"    Added {len(new_cols)} new columns: {', '.join(list(new_cols)[:5])}{'...' if len(new_cols) > 5 else ''}")
+                
+            except Exception as e:
+                print(f"    Error during one-hot encoding: {str(e)}")
+    
+    return df
+
+def scale_features(df, strategy, column_strategies=None):
+    """
+    Scale numeric features in the dataframe.
+    
+    Args:
+        df: The dataframe to process
+        strategy: The global scaling strategy ('none', 'minmax', 'standard', 'robust')
+        column_strategies: Dict mapping column names to their specific preprocessing settings
+    
+    Returns:
+        Processed dataframe
+    """
+    # Make a copy to avoid modifying the original
+    df = df.copy()
+    
+    print(f"Starting feature scaling with strategy: {strategy}")
+    
+    # Skip if strategy is 'none' and all column strategies are also 'none'
+    if strategy == 'none' and (not column_strategies or all(
+            col_settings.get('scaling_strategy', 'global') in ['global', 'none'] 
+            for col, col_settings in column_strategies.items() if col in df.columns)):
+        print("No scaling needed (all strategies are 'none')")
+        return df
+    
+    # Identify numeric columns
+    numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+    
+    if not numeric_cols:
+        print("No numeric columns found for scaling")
+        return df
+    
+    print(f"Found {len(numeric_cols)} numeric columns to potentially scale")
+    
+    # For each numeric column, apply the appropriate scaling
+    for col in numeric_cols:
+        # Determine which strategy to use for this column
+        col_strategy = strategy
+        
+        if column_strategies and col in column_strategies:
+            col_settings = column_strategies[col]
+            col_scaling = col_settings.get('scaling_strategy', 'global')
+            
+            if col_scaling != 'global':
+                col_strategy = col_scaling
+        
+        # Skip columns with 'none' strategy
+        if col_strategy == 'none':
+            print(f"  Skipping scaling for column '{col}' (strategy: none)")
+            continue
+        
+        # Handle NaN values before scaling (replace with mean)
+        missing_count = df[col].isna().sum()
+        if missing_count > 0:
+            print(f"  Column '{col}' has {missing_count} missing values, filling with mean before scaling")
+            df[col] = df[col].fillna(df[col].mean())
+        
+        # Create the appropriate scaler
+        if col_strategy == 'minmax':
+            from sklearn.preprocessing import MinMaxScaler
+            print(f"  Applying MinMax scaling to column '{col}'")
+            scaler = MinMaxScaler()
+        elif col_strategy == 'standard':
+            from sklearn.preprocessing import StandardScaler
+            print(f"  Applying Standard scaling to column '{col}'")
+            scaler = StandardScaler()
+        elif col_strategy == 'robust':
+            from sklearn.preprocessing import RobustScaler
+            print(f"  Applying Robust scaling to column '{col}'")
+            scaler = RobustScaler()
+        else:
+            print(f"  Unknown scaling strategy '{col_strategy}' for column '{col}', skipping")
+            continue
+        
+        # Apply scaling to the column
+        try:
+            # Print some stats before scaling
+            before_min = df[col].min()
+            before_max = df[col].max()
+            before_mean = df[col].mean()
+            before_std = df[col].std()
+            
+            # Apply scaling
+            df[col] = scaler.fit_transform(df[[col]])
+            
+            # Print some stats after scaling
+            after_min = df[col].min()
+            after_max = df[col].max()
+            after_mean = df[col].mean()
+            after_std = df[col].std()
+            
+            print(f"    Before scaling: min={before_min:.4f}, max={before_max:.4f}, mean={before_mean:.4f}, std={before_std:.4f}")
+            print(f"    After scaling:  min={after_min:.4f}, max={after_max:.4f}, mean={after_mean:.4f}, std={after_std:.4f}")
+        except Exception as e:
+            print(f"    Error scaling column '{col}': {str(e)}")
+    
+    return df
+
+def handle_outliers(df, column, strategy='clip', threshold=3):
+    """Handle outliers in a numeric column."""
+    if strategy not in ['clip', 'remove']:
+        return df
+    
+    z_scores = np.abs((df[column] - df[column].mean()) / df[column].std())
+    
+    if strategy == 'clip':
+        df[column] = df[column].clip(
+            lower=df[column].mean() - threshold * df[column].std(),
+            upper=df[column].mean() + threshold * df[column].std()
+        )
+    else:  # remove
+        df = df[z_scores < threshold]
+    
+    return df
+
+def apply_numeric_conditions(df, column, conditions):
+    """
+    Apply numeric conditions to filter rows.
+    Rows that match the conditions will be REMOVED from the dataset.
+    
+    Args:
+        df: DataFrame to filter
+        column: Column to apply conditions to
+        conditions: List of condition dictionaries with 'type' and 'value' keys
+        
+    Returns:
+        Filtered DataFrame with rows removed that match the conditions
+    """
+    print(f"\n===== APPLYING NUMERIC CONDITIONS FOR COLUMN '{column}' =====")
+    print(f"Original dataframe shape: {df.shape}")
+    print(f"First 5 rows of original dataframe:\n{df.head()}")
+    
+    # Make a copy to avoid modifying the original
+    df_result = df.copy()
+    
+    # Handle string JSON representation (might be coming from DB)
+    if isinstance(conditions, str):
+        import json
+        try:
+            conditions = json.loads(conditions)
+            print(f"Parsed JSON conditions: {conditions}")
+        except json.JSONDecodeError as e:
+            print(f"Failed to parse conditions: {e}")
+            return df_result
+    
+    # Verify conditions is a list or has expected format
+    if not conditions or not isinstance(conditions, list):
+        print(f"No valid numeric conditions for column '{column}'")
+        return df_result
+    
+    # Verify column exists
+    if column not in df_result.columns:
+        print(f"Column '{column}' not found in DataFrame")
+        return df_result
+    
+    # Verify column is numeric
+    if not pd.api.types.is_numeric_dtype(df_result[column]):
+        print(f"Column '{column}' is not numeric (type: {df_result[column].dtype})")
+        return df_result
+        
+    rows_before = len(df_result)
+    print(f"Processing {len(conditions)} numeric conditions")
+    print(f"Column values sample: {df_result[column].head().tolist()}")
+    
+    # Process each condition individually
+    for i, condition in enumerate(conditions):
+        print(f"Condition {i+1}: {condition}")
+        
+        # Skip invalid conditions
+        if not isinstance(condition, dict):
+            print(f"Skipping invalid condition format: {type(condition)}")
+            continue
+            
+        condition_type = condition.get('type')
+        condition_value = condition.get('value')
+        
+        if not condition_type or condition_value is None:
+            print(f"Skipping condition with missing type or value")
+            continue
+        
+        # Convert value to numeric if needed
+        try:
+            value = float(condition_value)
+        except (ValueError, TypeError):
+            print(f"Could not convert condition value '{condition_value}' to numeric")
+            continue
+        
+        # Calculate the condition mask
+        rows_count_before = len(df_result)
+        
+        # Create a mask to identify rows to DROP
+        if condition_type == 'greater_than':
+            print(f"FILTER: Removing rows where {column} > {value}")
+            # Direct filtering approach: drop rows where condition is met
+            drop_mask = df_result[column] > value
+            rows_to_drop = drop_mask.sum()
+            print(f"Found {rows_to_drop} rows to drop where {column} > {value}")
+            
+            if rows_to_drop > 0:
+                # Show samples of rows that will be dropped
+                drop_samples = df_result[drop_mask].head(3)
+                print(f"Sample rows to drop:\n{drop_samples}")
+                
+                # Actually drop the rows
+                df_result = df_result[~drop_mask]
+                print(f"After dropping: {len(df_result)} rows remain (dropped {rows_count_before - len(df_result)} rows)")
+                
+        elif condition_type == 'less_than':
+            print(f"FILTER: Removing rows where {column} < {value}")
+            drop_mask = df_result[column] < value
+            rows_to_drop = drop_mask.sum()
+            print(f"Found {rows_to_drop} rows to drop where {column} < {value}")
+            
+            if rows_to_drop > 0:
+                drop_samples = df_result[drop_mask].head(3)
+                print(f"Sample rows to drop:\n{drop_samples}")
+                df_result = df_result[~drop_mask]
+                print(f"After dropping: {len(df_result)} rows remain (dropped {rows_count_before - len(df_result)} rows)")
+                
+        elif condition_type == 'equal_to':
+            print(f"FILTER: Removing rows where {column} == {value}")
+            drop_mask = df_result[column] == value
+            rows_to_drop = drop_mask.sum()
+            print(f"Found {rows_to_drop} rows to drop where {column} == {value}")
+            
+            if rows_to_drop > 0:
+                drop_samples = df_result[drop_mask].head(3)
+                print(f"Sample rows to drop:\n{drop_samples}")
+                df_result = df_result[~drop_mask]
+                print(f"After dropping: {len(df_result)} rows remain (dropped {rows_count_before - len(df_result)} rows)")
+                
+        elif condition_type == 'not_equal_to':
+            print(f"FILTER: Removing rows where {column} != {value}")
+            drop_mask = df_result[column] != value
+            rows_to_drop = drop_mask.sum()
+            print(f"Found {rows_to_drop} rows to drop where {column} != {value}")
+            
+            if rows_to_drop > 0:
+                drop_samples = df_result[drop_mask].head(3)
+                print(f"Sample rows to drop:\n{drop_samples}")
+                df_result = df_result[~drop_mask]
+                print(f"After dropping: {len(df_result)} rows remain (dropped {rows_count_before - len(df_result)} rows)")
+                
+        elif condition_type == 'between':
+            min_val = condition.get('min')
+            max_val = condition.get('max')
+            if min_val is not None and max_val is not None:
+                try:
+                    min_val = float(min_val)
+                    max_val = float(max_val)
+                    print(f"FILTER: Removing rows where {min_val} <= {column} <= {max_val}")
+                    drop_mask = (df_result[column] >= min_val) & (df_result[column] <= max_val)
+                    rows_to_drop = drop_mask.sum()
+                    print(f"Found {rows_to_drop} rows to drop where {min_val} <= {column} <= {max_val}")
+                    
+                    if rows_to_drop > 0:
+                        drop_samples = df_result[drop_mask].head(3)
+                        print(f"Sample rows to drop:\n{drop_samples}")
+                        df_result = df_result[~drop_mask]
+                        print(f"After dropping: {len(df_result)} rows remain (dropped {rows_count_before - len(df_result)} rows)")
+                except (ValueError, TypeError):
+                    print(f"Could not convert min/max values to numeric")
+    
+    # Print final results
+    rows_removed = rows_before - len(df_result)
+    print(f"FINAL RESULT: Removed {rows_removed} rows out of {rows_before} rows (remaining: {len(df_result)})")
+    if len(df_result) > 0:
+        print(f"First 5 rows of filtered dataframe:\n{df_result.head()}")
+    
+    # Return the filtered DataFrame
+    return df_result
+
+def apply_categorical_conditions(df, column, conditions):
+    """
+    Apply categorical conditions to filter rows.
+    Rows that match the conditions will be REMOVED from the dataset.
+    
+    Args:
+        df: DataFrame to filter
+        column: Column to apply conditions to
+        conditions: Dictionary with 'include' and 'exclude' lists
+        
+    Returns:
+        Filtered DataFrame with rows removed that match the conditions
+    """
+    print(f"\n===== APPLYING CATEGORICAL CONDITIONS FOR COLUMN '{column}' =====")
+    print(f"Original dataframe shape: {df.shape}")
+    print(f"First 5 rows of original dataframe:\n{df.head()}")
+    
+    # Make a copy to avoid modifying the original
+    df_result = df.copy()
+    
+    # Handle string JSON representation (might be coming from DB)
+    if isinstance(conditions, str):
+        import json
+        try:
+            conditions = json.loads(conditions)
+            print(f"Parsed JSON conditions: {conditions}")
+        except json.JSONDecodeError as e:
+            print(f"Failed to parse conditions: {e}")
+            return df_result
+    
+    # Check if conditions is empty or doesn't have include/exclude lists
+    if not conditions or not isinstance(conditions, dict) or (not conditions.get('include') and not conditions.get('exclude')):
+        print(f"No valid categorical conditions for column '{column}'")
+        return df_result
+    
+    # Print the conditions for debugging
+    print(f"Conditions object: {conditions}")
+    if 'include' in conditions:
+        print(f"Include values: {conditions['include']}")
+    if 'exclude' in conditions:
+        print(f"Exclude values: {conditions['exclude']}")
+    
+    # Verify column exists
+    if column not in df_result.columns:
+        print(f"Column '{column}' not found in DataFrame")
+        return df_result
+        
+    rows_before = len(df_result)
+    print(f"Column data type: {df_result[column].dtype}")
+    print(f"Unique values in column: {df_result[column].unique().tolist()}")
+    print(f"Column values sample: {df_result[column].head().tolist()}")
+    
+    # INCLUDE filter - rows WITH these values will be REMOVED
+    include_values = conditions.get('include', [])
+    if include_values:
+        print(f"\nINCLUDE FILTER: Will REMOVE rows where '{column}' has any of these values: {include_values}")
+        rows_before_filter = len(df_result)
+        
+        # Create a mask for rows to DROP (where column value IS in include_values)
+        drop_mask = df_result[column].isin(include_values)
+        rows_to_drop = drop_mask.sum()
+        print(f"Found {rows_to_drop} rows to drop based on include values")
+        
+        if rows_to_drop > 0:
+            # Show samples of rows that will be dropped
+            drop_samples = df_result[drop_mask].head(3)
+            print(f"Sample rows to drop (include filter):\n{drop_samples}")
+            
+            # Actually drop the rows
+            df_result = df_result[~drop_mask]
+            print(f"After include filter: {len(df_result)} rows remain (dropped {rows_before_filter - len(df_result)} rows)")
+    
+    # EXCLUDE filter - rows WITHOUT these values will be REMOVED
+    exclude_values = conditions.get('exclude', [])
+    if exclude_values:
+        print(f"\nEXCLUDE FILTER: Will REMOVE rows where '{column}' does NOT have any of these values: {exclude_values}")
+        rows_before_filter = len(df_result)
+        
+        # Create a mask for rows to DROP (where column value is NOT in exclude_values)
+        drop_mask = ~df_result[column].isin(exclude_values)
+        rows_to_drop = drop_mask.sum()
+        print(f"Found {rows_to_drop} rows to drop based on exclude values")
+        
+        if rows_to_drop > 0:
+            # Show samples of rows that will be dropped
+            drop_samples = df_result[drop_mask].head(3)
+            print(f"Sample rows to drop (exclude filter):\n{drop_samples}")
+            
+            # Actually drop the rows
+            df_result = df_result[~drop_mask]
+            print(f"After exclude filter: {len(df_result)} rows remain (dropped {rows_before_filter - len(df_result)} rows)")
+    
+    # Print final results
+    rows_removed = rows_before - len(df_result)
+    print(f"\nFINAL RESULT: Removed {rows_removed} rows out of {rows_before} rows (remaining: {len(df_result)})")
+    if len(df_result) > 0:
+        print(f"First 5 rows of filtered dataframe:\n{df_result.head()}")
+    
+    # Return the filtered DataFrame
+    return df_result
+
+def apply_preprocessing(df, preprocessing_config, dataset_id=None):
+    """
+    Apply preprocessing operations to a dataframe based on the preprocessing config.
+    
+    Args:
+        df: The dataframe to process
+        preprocessing_config: A dictionary or ColumnPreprocessing object with preprocessing settings
+        dataset_id: Optional ID of the dataset for saving the processed file
+        
+    Returns:
+        Processed dataframe
+    """
+    # Import necessary modules here to avoid circular imports
+    import os
+    
+    print(f"\n=========== PREPROCESSING STARTED ===========")
+    print(f"Initial DataFrame shape: {df.shape}")
+    
+    # Check for missing values by column before any processing
+    missing_values_by_column = df.isna().sum()
+    total_missing = missing_values_by_column.sum()
+    print(f"Initial missing values: {total_missing}")
+    if total_missing > 0:
+        columns_with_missing = missing_values_by_column[missing_values_by_column > 0]
+        print(f"Columns with missing values: {columns_with_missing.to_dict()}")
+    
+    # Convert to a dict if it's a model instance
+    if hasattr(preprocessing_config, 'to_dict'):
+        config = preprocessing_config.to_dict()
+    else:
+        config = preprocessing_config
+    
+    # Build column-specific strategies dictionary
+    column_strategies = {}
+    
+    # Extract column settings if they exist
+    column_settings = config.get('column_settings', {})
+    
+    # Debug print the column settings
+    if column_settings:
+        print(f"Found column-specific settings for {len(column_settings)} columns")
+        for col, settings in column_settings.items():
+            if isinstance(settings, str):
+                try:
+                    settings = json.loads(settings)
+                    column_settings[col] = settings
+                    print(f"Parsed column settings for '{col}' from string: {settings}")
+                except json.JSONDecodeError:
+                    print(f"Error parsing column settings for '{col}': {settings}")
+                    # Don't stop processing, continue with what we can parse
+            
+            # Now check if we have missing values strategy
+            if isinstance(settings, dict) and 'missing_values_strategy' in settings:
+                print(f"Column '{col}' has missing value strategy: {settings['missing_values_strategy']}")
+                column_strategies[col] = {
+                    'missing_values_strategy': settings['missing_values_strategy'],
+                    'fill_value': settings.get('fill_value')
+                }
+            
+            # Print all conditions for debugging
+            if isinstance(settings, dict):
+                if 'numeric_conditions' in settings:
+                    print(f"Column '{col}' has numeric conditions: {settings['numeric_conditions']}")
+                if 'categorical_conditions' in settings:
+                    print(f"Column '{col}' has categorical conditions: {settings['categorical_conditions']}")
+    else:
+        print("No column-specific settings found")
+    
+    # Missing values handling
+    missing_strategy = config.get('missing_values_strategy')
+    fill_value = config.get('fill_value')
+    
+    if missing_strategy or column_strategies:
+        print("\n=== Handling Missing Values ===")
+        df = handle_missing_values(
+            df, 
+            strategy=missing_strategy, 
+            fill_value=fill_value, 
+            column_strategies=column_strategies
+        )
+        print(f"DataFrame shape after missing values handling: {df.shape}")
+    
+    # Handle outliers
+    outlier_strategy = config.get('outlier_strategy')
+    outlier_params = config.get('outlier_params', {})
+    if outlier_strategy and outlier_strategy != 'none':
+        df = handle_outliers(df, outlier_strategy, outlier_params)
+    
+    # Apply numeric conditions
+    # Replace this section that's not working
+    # numeric_conditions = config.get('numeric_conditions')
+    # print("\n\n\n")
+    # print(numeric_conditions)
+    # print("\n\n\n")
+    # if numeric_conditions and isinstance(numeric_conditions, dict):
+    
+    # Apply column-specific numeric and categorical conditions
+    print("\n=== Applying Column Conditions from UI ===")
+    rows_before = len(df)
+    rows_to_drop = set()
+    
+    # First, check and process all column-specific conditions
+    if column_settings:
+        for col, settings in column_settings.items():
+            print(f"\nChecking conditions for column: '{col}'")
+            
+            # Process numeric conditions if they exist
+            if 'numeric_conditions' in settings and col in df.columns:
+                numeric_cond = settings['numeric_conditions']
+                # Convert from string to dict/list if needed
+                if isinstance(numeric_cond, str):
+                    try:
+                        numeric_cond = json.loads(numeric_cond)
+                        print(f"Parsed numeric conditions for '{col}': {numeric_cond}")
+                    except json.JSONDecodeError:
+                        print(f"Error parsing numeric conditions for '{col}': {numeric_cond}")
+                        continue
+                    except Exception as e:
+                        print(f"Unexpected error parsing numeric conditions: {str(e)}")
+                        continue
+                
+                # Make sure numeric_cond is a list
+                if isinstance(numeric_cond, dict):
+                    numeric_cond = [numeric_cond]
+                    print(f"Converted single numeric condition to list: {numeric_cond}")
+                
+                # Apply numeric conditions if column is numeric
+                if pd.api.types.is_numeric_dtype(df[col]):
+                    print(f"Applying numeric conditions to column '{col}': {numeric_cond}")
+                    filtered_df = apply_numeric_conditions(df, col, numeric_cond)
+                    # Get the indices that were dropped
+                    dropped_indices = set(df.index) - set(filtered_df.index)
+                    if dropped_indices:
+                        print(f"Numeric filtering identified {len(dropped_indices)} rows to drop from '{col}'")
+                        rows_to_drop.update(dropped_indices)
+                else:
+                    print(f"Column '{col}' is not numeric, skipping numeric conditions")
+            
+            # Process categorical conditions if they exist
+            if 'categorical_conditions' in settings and col in df.columns:
+                cat_cond = settings['categorical_conditions']
+                # Convert from string to dict if needed
+                if isinstance(cat_cond, str):
+                    try:
+                        cat_cond = json.loads(cat_cond)
+                        print(f"Parsed categorical conditions for '{col}': {cat_cond}")
+                    except json.JSONDecodeError:
+                        print(f"Error parsing categorical conditions for '{col}': {cat_cond}")
+                        continue
+                    except Exception as e:
+                        print(f"Unexpected error parsing categorical conditions: {str(e)}")
+                        continue
+                
+                # Apply categorical conditions
+                print(f"Applying categorical conditions to column '{col}': {cat_cond}")
+                filtered_df = apply_categorical_conditions(df, col, cat_cond)
+                # Get the indices that were dropped
+                dropped_indices = set(df.index) - set(filtered_df.index)
+                if dropped_indices:
+                    print(f"Categorical filtering identified {len(dropped_indices)} rows to drop from '{col}'")
+                    rows_to_drop.update(dropped_indices)
+    
+    # Drop the rows that don't meet conditions
+    if rows_to_drop:
+        drop_indices = list(rows_to_drop)
+        print(f"\nDropping {len(drop_indices)} rows that don't meet conditions")
+        df = df.drop(index=drop_indices)
+        print(f"Rows before: {rows_before}, Rows after: {len(df)}, Dropped: {rows_before - len(df)}")
+    else:
+        print("\nNo rows to drop based on conditions")
+    
+    # Apply column-specific outlier handling
+    if column_settings:
+        print("\n=== Handling Column-Specific Outliers ===")
+        for col, settings in column_settings.items():
+            if col not in df.columns:
+                print(f"Column '{col}' not found, skipping outlier handling")
+                continue
+                
+            # Skip non-numeric columns for outlier handling
+            if not pd.api.types.is_numeric_dtype(df[col]):
+                continue
+                
+            col_outlier_strategy = settings.get('outlier_strategy')
+            if not col_outlier_strategy or col_outlier_strategy == 'global':
+                continue
+                
+            print(f"Column '{col}': Applying outlier strategy '{col_outlier_strategy}'")
+            
+            # Calculate IQR and bounds
+            q1 = df[col].quantile(0.25)
+            q3 = df[col].quantile(0.75)
+            iqr = q3 - q1
+            lower_bound = q1 - 1.5 * iqr
+            upper_bound = q3 + 1.5 * iqr
+            
+            if col_outlier_strategy == 'trim':
+                # Create a mask for rows within bounds for this column
+                rows_before = len(df)
+                col_mask = (df[col] >= lower_bound) & (df[col] <= upper_bound)
+                outliers = (~col_mask).sum()
+                
+                if outliers > 0:
+                    print(f"  Removing {outliers} rows with outliers in column '{col}'")
+                    df = df[col_mask]
+                    print(f"  Removed {rows_before - len(df)} rows")
+                    
+            elif col_outlier_strategy == 'cap':
+                # Count outliers before capping
+                outliers_below = (df[col] < lower_bound).sum()
+                outliers_above = (df[col] > upper_bound).sum()
+                total_outliers = outliers_below + outliers_above
+                
+                if total_outliers > 0:
+                    print(f"  Capping {total_outliers} outliers in column '{col}' to range [{lower_bound:.2f}, {upper_bound:.2f}]")
+                    print(f"    - {outliers_below} below lower bound, {outliers_above} above upper bound")
+                    # Cap the outliers
+                    df[col] = df[col].clip(lower=lower_bound, upper=upper_bound)
+    
+    # Apply column-specific encoding
+    if column_settings:
+        print("\n=== Handling Column-Specific Encoding ===")
+        
+        # Get column types for proper encoding
+        column_types = get_column_types(df)
+        categorical_cols = [col for col, type_ in column_types.items() 
+                           if type_ in ['categorical', 'binary'] and col in df.columns]
+        
+        print(f"Found {len(categorical_cols)} categorical columns that might be encoded")
+        
+        # Create column-specific encoding strategies dictionary
+        encoding_column_strategies = {}
+        for col, settings in column_settings.items():
+            if col in df.columns and col in categorical_cols:
+                col_encoding_strategy = settings.get('encoding_strategy')
+                if col_encoding_strategy and col_encoding_strategy != 'global':
+                    encoding_column_strategies[col] = {'encoding_strategy': col_encoding_strategy}
+                    print(f"Column '{col}': Will apply encoding strategy '{col_encoding_strategy}'")
+        
+        # Apply column-specific encoding using the existing function
+        if encoding_column_strategies:
+            print(f"Applying column-specific encoding for {len(encoding_column_strategies)} columns")
+            df = encode_categorical(df, 'none', column_types, encoding_column_strategies)
+            print(f"DataFrame shape after column-specific encoding: {df.shape}")
+        else:
+            print("No column-specific encoding to apply")
+    
+    # Apply column-specific scaling
+    if column_settings:
+        print("\n=== Handling Column-Specific Scaling ===")
+        
+        # Get numeric columns
+        numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+        print(f"Found {len(numeric_cols)} numeric columns that might be scaled")
+        
+        # Create column-specific scaling strategies dictionary
+        scaling_column_strategies = {}
+        for col, settings in column_settings.items():
+            if col in df.columns and col in numeric_cols:
+                col_scaling_strategy = settings.get('scaling_strategy')
+                if col_scaling_strategy and col_scaling_strategy != 'global':
+                    scaling_column_strategies[col] = {'scaling_strategy': col_scaling_strategy}
+                    print(f"Column '{col}': Will apply scaling strategy '{col_scaling_strategy}'")
+                    
+        # Apply column-specific scaling using the existing function
+        if scaling_column_strategies:
+            print(f"Applying column-specific scaling for {len(scaling_column_strategies)} columns")
+            df = scale_features(df, 'none', scaling_column_strategies)
+            print(f"DataFrame shape after column-specific scaling: {df.shape}")
+        else:
+            print("No column-specific scaling to apply")
+
+    # Apply global encoding for categorical columns
+    encoding_strategy = config.get('encoding_strategy')
+    if encoding_strategy and encoding_strategy != 'none':
+        print("\n=== Applying Global Encoding Strategy ===")
+        print(f"Global encoding strategy: {encoding_strategy}")
+        
+        # Get column types for all columns
+        column_types = get_column_types(df)
+        
+        # Apply encoding using the encode_categorical function
+        df = encode_categorical(df, encoding_strategy, column_types, column_strategies)
+        print(f"DataFrame shape after encoding: {df.shape}")
+    
+    # Scaling features
+    scaling_strategy = config.get('scaling_strategy')
+    if scaling_strategy and scaling_strategy != 'none':
+        print("\n=== Scaling Features ===")
+        print(f"Applying global scaling strategy: {scaling_strategy}")
+        
+        # Apply scaling using the scale_features function
+        df = scale_features(df, scaling_strategy, column_strategies)
+        print(f"DataFrame shape after scaling: {df.shape}")
+    
+    # Apply feature selection if requested
+    feature_selection = config.get('feature_selection')
+    if feature_selection and feature_selection != 'none':
+        print("\n=== Applying Feature Selection ===")
+        # Get numeric columns
+        numeric_cols = df.select_dtypes(include=['number']).columns
+        
+        if len(numeric_cols) > 0:
+            # Get the threshold or number of features
+            n_features = config.get('n_features', min(10, len(numeric_cols)))
+            try:
+                n_features = int(n_features)
+            except:
+                n_features = min(10, len(numeric_cols))
+            
+            print(f"Using feature selection method: {feature_selection} to select {n_features} features")
+            
+            if feature_selection == 'variance':
+                # Select features based on variance threshold
+                from sklearn.feature_selection import VarianceThreshold
+                
+                # Compute variances
+                variances = df[numeric_cols].var()
+                # Sort by variance
+                sorted_vars = variances.sort_values(ascending=False)
+                
+                # Select top n_features based on variance
+                selected_features = sorted_vars.index[:n_features].tolist()
+                
+                # Keep non-numeric columns
+                non_numeric = [col for col in df.columns if col not in numeric_cols]
+                df = df[non_numeric + selected_features]
+                
+                print(f"Selected {len(selected_features)} features based on variance: {selected_features}")
+                
+            elif feature_selection == 'kbest':
+                # This requires a target variable, which we don't have here
+                # For now, let's just select top n_features based on variance
+                print("K-Best feature selection requires a target variable. Using variance method instead.")
+                
+                # Compute variances
+                variances = df[numeric_cols].var()
+                # Sort by variance
+                sorted_vars = variances.sort_values(ascending=False)
+                
+                # Select top n_features based on variance
+                selected_features = sorted_vars.index[:n_features].tolist()
+                
+                # Keep non-numeric columns
+                non_numeric = [col for col in df.columns if col not in numeric_cols]
+                df = df[non_numeric + selected_features]
+                
+                print(f"Selected {len(selected_features)} features based on variance: {selected_features}")
+                
+            print(f"DataFrame shape after feature selection: {df.shape}")
+        else:
+            print("No numeric columns found for feature selection")
+    
+    # Apply PCA if requested
+    pca_components = config.get('pca_components')
+    if pca_components and pca_components != 'none':
+        print("\n=== Applying PCA ===")
+        # Get numeric columns
+        numeric_cols = df.select_dtypes(include=['number']).columns
+        
+        if len(numeric_cols) > 0:
+            try:
+                n_components = int(pca_components)
+            except:
+                n_components = min(10, len(numeric_cols))
+                
+            n_components = min(n_components, len(numeric_cols))
+            
+            if n_components > 0:
+                print(f"Applying PCA with {n_components} components")
+                from sklearn.decomposition import PCA
+                
+                # Create a PCA instance
+                pca = PCA(n_components=n_components)
+                
+                # Get non-numeric columns
+                non_numeric = [col for col in df.columns if col not in numeric_cols]
+                
+                # Apply PCA to numeric columns
+                pca_result = pca.fit_transform(df[numeric_cols])
+                
+                # Create a dataframe with PCA components
+                pca_df = pd.DataFrame(
+                    data=pca_result,
+                    columns=[f'PC{i+1}' for i in range(n_components)]
+                )
+                
+                # Combine non-numeric columns with PCA components
+                if non_numeric:
+                    df = pd.concat([df[non_numeric].reset_index(drop=True), pca_df.reset_index(drop=True)], axis=1)
+                else:
+                    df = pca_df
+                
+                # Print variance explained
+                explained_var = pca.explained_variance_ratio_
+                total_var = explained_var.sum() * 100
+                print(f"Total variance explained: {total_var:.2f}%")
+                for i, var in enumerate(explained_var):
+                    print(f"  PC{i+1}: {var*100:.2f}% variance explained")
+                
+                print(f"DataFrame shape after PCA: {df.shape}")
+            else:
+                print("Invalid number of PCA components, skipping")
+        else:
+            print("No numeric columns found for PCA")
+    
+    # If dataset_id is provided, save the preprocessed dataset
+    if dataset_id:
+        try:
+            from django.conf import settings as django_settings
+            import os
+            
+            # Ensure the datasets directory exists
+            datasets_dir = os.path.join(django_settings.MEDIA_ROOT, 'datasets')
+            os.makedirs(datasets_dir, exist_ok=True)
+            
+            # Save the preprocessed file
+            preprocessed_path = os.path.join(datasets_dir, f'preprocessed_{dataset_id}.csv')
+            df.to_csv(preprocessed_path, index=False)
+            print(f"\nPreprocessed dataset saved to: {preprocessed_path}")
+        except Exception as e:
+            print(f"Warning: Could not save preprocessed dataset: {str(e)}")
+    
+    print(f"\n=========== PREPROCESSING COMPLETED ===========")
+    print(f"Final DataFrame shape: {df.shape}")
+    return df
+
+def visualize_single_column(df, column, column_type):
+    """
+    Generate visualization for a single column.
+    
+    Args:
+        df: DataFrame containing the data
+        column: Name of the column to visualize
+        column_type: Type of the column ('numeric', 'categorical', etc.)
+    
+    Returns:
+        Dictionary containing visualization data
+    """
+    result = {}
+    
+    try:
+        print(f"Generating visualization for column: {column} of type: {column_type}")
+        
+        # Don't visualize text columns
+        if column_type == 'text':
+            return {'error': 'Text columns cannot be visualized', 'message': 'Text columns are not supported for visualization'}
+        
+        if column_type == 'numeric':
+            # 1. Create histogram for numeric columns
+            hist_fig = go.Figure()
+            
+            # Add histogram
+            hist_fig.add_trace(go.Histogram(
+                x=df[column].dropna(),
+                name=column,
+                nbinsx=30
+            ))
+            
+            # Add KDE if enough unique values
+            if df[column].nunique() > 5:
+                # Only calculate KDE if we have enough non-null values
+                non_null_data = df[column].dropna()
+                if len(non_null_data) > 10:
+                    try:
+                        kde = gaussian_kde(non_null_data)
+                        x_range = np.linspace(non_null_data.min(), non_null_data.max(), 100)
+                        hist_fig.add_trace(go.Scatter(
+                            x=x_range,
+                            y=kde(x_range) * len(df) * (non_null_data.max() - non_null_data.min()) / 30,
+                            name='Density',
+                            line=dict(color='red', width=2)
+                        ))
+                    except Exception as e:
+                        print(f"Error calculating KDE: {str(e)}")
+            
+            # Update layout
+            hist_fig.update_layout(
+                title=f'Distribution of {column}',
+                xaxis_title=column,
+                yaxis_title='Count',
+                showlegend=True,
+                bargap=0.1,
+                template='plotly_white'
+            )
+            
+            # Add histogram to result
+            result['histogram'] = json.dumps(hist_fig.to_dict(), cls=NumpyEncoder)
+            
+            # 2. Create scatter plot
+            scatter_fig = go.Figure()
+            
+            # Add scatter plot with jitter for better visualization
+            scatter_fig.add_trace(go.Scatter(
+                x=np.random.normal(0, 0.01, size=len(df)),  # Add jitter to x
+                y=df[column],
+                mode='markers',
+                marker=dict(
+                    size=8,
+                    opacity=0.7,
+                    color=df[column],
+                    colorscale='Viridis'
+                ),
+                name=column
+            ))
+            
+            # Update layout
+            scatter_fig.update_layout(
+                title=f'Scatter Plot of {column}',
+                xaxis_title='Index',
+                yaxis_title=column,
+                showlegend=False,
+                template='plotly_white'
+            )
+            
+            # Add scatter to result
+            result['scatter'] = json.dumps(scatter_fig.to_dict(), cls=NumpyEncoder)
+            
+            # 3. Create box plot
+            box_fig = go.Figure()
+            
+            # Add box plot
+            box_fig.add_trace(go.Box(
+                y=df[column].dropna(),
+                name=column,
+                boxpoints='outliers',
+                jitter=0.3,
+                pointpos=-1.8,
+                boxmean=True,  # Show mean
+                marker=dict(
+                    color='rgb(8,81,156)',
+                    outliercolor='rgba(219, 64, 82, 0.6)',
+                    line=dict(
+                        outliercolor='rgba(219, 64, 82, 0.6)',
+                        outlierwidth=2
+                    )
+                ),
+                line_color='rgb(8,81,156)'
+            ))
+            
+            # Update layout
+            box_fig.update_layout(
+                title=f'Box Plot of {column}',
+                yaxis_title=column,
+                showlegend=False,
+                template='plotly_white'
+            )
+            
+            # Add box plot to result
+            result['boxplot'] = json.dumps(box_fig.to_dict(), cls=NumpyEncoder)
+            
+        elif column_type in ['categorical', 'binary']:
+            # Create bar chart for categorical columns
+            value_counts = df[column].value_counts()
+            
+            # Sort values by frequency
+            value_counts = value_counts.sort_values(ascending=False)
+            
+            # Limit to top 30 categories for visualization clarity
+            if len(value_counts) > 30:
+                print(f"Limiting visualization to top 30 categories out of {len(value_counts)}")
+                other_sum = value_counts[30:].sum()
+                value_counts = value_counts[:30]
+                value_counts['Other'] = other_sum
+            
+            fig = go.Figure()
+            
+            # Add trace with better colors
+            fig.add_trace(go.Bar(
+                x=value_counts.index,
+                y=value_counts.values,
+                name=column,
+                marker=dict(
+                    color='rgb(64, 83, 196)',
+                    line=dict(color='rgb(8, 48, 107)', width=1.5)
+                )
+            ))
+            
+            # Update layout
+            fig.update_layout(
+                title=f'Distribution of {column}',
+                xaxis_title=column,
+                yaxis_title='Count',
+                xaxis={'categoryorder':'total descending'},
+                showlegend=False,
+                bargap=0.1,
+                template='plotly_white'
+            )
+            
+            # Add bar chart to result
+            result['bar'] = json.dumps(fig.to_dict(), cls=NumpyEncoder)
+            
+        elif column_type == 'datetime':
+            # Create time series plot
+            fig = go.Figure()
+            
+            # Convert to datetime if not already
+            datetime_col = pd.to_datetime(df[column], errors='coerce')
+            
+            # Create time-based aggregation
+            time_counts = datetime_col.dt.date.value_counts().sort_index()
+            
+            # Create time series plot
+            fig.add_trace(go.Scatter(
+                x=time_counts.index,
+                y=time_counts.values,
+                mode='lines+markers',
+                name=column,
+                line=dict(
+                    color='rgb(64, 83, 196)',
+                    width=2
+                ),
+                marker=dict(
+                    size=5,
+                    color='rgb(8, 48, 107)'
+                )
+            ))
+            
+            # Update layout
+            fig.update_layout(
+                title=f'Time Series of {column}',
+                xaxis_title='Date',
+                yaxis_title='Count',
+                showlegend=False,
+                template='plotly_white'
+            )
+            
+            # Add time series to result
+            result['timeseries'] = json.dumps(fig.to_dict(), cls=NumpyEncoder)
+            
+        elif column_type == 'text':
+            # Create word frequency bar chart for text columns
+            from collections import Counter
+            import re
+            
+            # Combine all text and tokenize
+            text_data = ' '.join(df[column].dropna().astype(str))
+            words = re.findall(r'\b\w+\b', text_data.lower())
+            
+            # Get word counts
+            word_counts = Counter(words)
+            
+            # Filter out common stop words and short words
+            stopwords = {'the', 'and', 'to', 'of', 'a', 'in', 'for', 'is', 'on', 'that', 'by', 'this', 'with', 'i', 'you', 'it'}
+            word_counts = {word: count for word, count in word_counts.items() if word not in stopwords and len(word) > 2}
+            
+            # Get top 30 words
+            top_words = sorted(word_counts.items(), key=lambda x: x[1], reverse=True)[:30]
+            words, counts = zip(*top_words) if top_words else ([], [])
+            
+            fig = go.Figure()
+            
+            # Add bar chart
+            fig.add_trace(go.Bar(
+                x=words,
+                y=counts,
+                marker=dict(
+                    color='rgb(158, 202, 225)',
+                    line=dict(color='rgb(8, 48, 107)', width=1.5)
+                )
+            ))
+            
+            # Update layout
+            fig.update_layout(
+                title=f'Word Frequency in {column}',
+                xaxis_title='Word',
+                yaxis_title='Frequency',
+                xaxis={'categoryorder':'total descending'},
+                showlegend=False,
+                template='plotly_white'
+            )
+            
+            # Add bar chart to result
+            result['bar'] = json.dumps(fig.to_dict(), cls=NumpyEncoder)
+        
+        # Add column type to result
+        result['column_type'] = column_type
+        
+        return result
+        
+    except Exception as e:
+        print(f"Error in visualize_single_column: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            'message': f'Error generating visualization: {str(e)}',
+            'column_type': column_type
+        }
+
+def visualize_comparison(df, columns, column_types):
+    """
+    Generate visualization comparing multiple columns.
+    
+    Args:
+        df: DataFrame containing the data
+        columns: List of column names to compare
+        column_types: Dictionary mapping column names to their types
+    
+    Returns:
+        Dictionary containing visualization data
+    """
+    result = {}
+    
+    try:
+        print(f"Generating comparison visualization for columns: {columns}")
+        
+        # Check if we have exactly two columns
+        if len(columns) != 2:
+            return {'message': 'Exactly two columns are required for comparison'}
+        
+        col1, col2 = columns
+        type1 = column_types[col1]
+        type2 = column_types[col2]
+        
+        # Both columns are numeric - create scatter plot
+        if type1 == 'numeric' and type2 == 'numeric':
+            print(f"Creating scatter plot for numeric columns: {col1} vs {col2}")
+            
+            # Create scatter plot
+            scatter_fig = go.Figure()
+            
+            # Add scatter plot
+            scatter_fig.add_trace(go.Scatter(
+                x=df[col1],
+                y=df[col2],
+                mode='markers',
+                marker=dict(
+                    size=8,
+                    opacity=0.7,
+                    color=df[col1],
+                    colorscale='Viridis',
+                    showscale=True,
+                    colorbar=dict(
+                        title=col1
+                    )
+                ),
+                name=f'{col1} vs {col2}'
+            ))
+            
+            # Add trendline
+            try:
+                # Remove missing values
+                clean_df = df[[col1, col2]].dropna()
+                
+                if len(clean_df) > 1:  # Need at least 2 points for regression
+                    from scipy import stats
+                    
+                    # Calculate regression line
+                    slope, intercept, r_value, p_value, std_err = stats.linregress(clean_df[col1], clean_df[col2])
+                    
+                    # Create regression line points
+                    x_range = np.linspace(df[col1].min(), df[col1].max(), 100)
+                    y_range = slope * x_range + intercept
+                    
+                    # Add regression line
+                    scatter_fig.add_trace(go.Scatter(
+                        x=x_range,
+                        y=y_range,
+                        mode='lines',
+                        name=f'Trend (r={r_value:.2f})',
+                        line=dict(color='red', width=2, dash='dash')
+                    ))
+                    
+                    # Calculate correlation
+                    correlation = clean_df[col1].corr(clean_df[col2])
+                    result['correlation'] = correlation
+                    
+                    # Add correlation annotation
+                    scatter_fig.add_annotation(
+                        x=0.95,
+                        y=0.05,
+                        xref="paper",
+                        yref="paper",
+                        text=f"Correlation: {correlation:.4f}",
+                        showarrow=False,
+                        font=dict(
+                            family="Arial",
+                            size=14,
+                            color="black"
+                        ),
+                        align="right",
+                        bgcolor="rgba(255, 255, 255, 0.8)",
+                        bordercolor="black",
+                        borderwidth=1,
+                        borderpad=4
+                    )
+            except Exception as e:
+                print(f"Error adding trendline: {str(e)}")
+            
+            # Update layout
+            scatter_fig.update_layout(
+                title=f'Scatter Plot: {col1} vs {col2}',
+                xaxis_title=col1,
+                yaxis_title=col2,
+                showlegend=True,
+                template='plotly_white',
+                height=600
+            )
+            
+            # Add histogram subplots for marginal distributions
+            scatter_fig.update_layout(
+                margin=dict(t=100),
+                xaxis=dict(
+                    domain=[0, 0.85],
+                    showgrid=True,
+                    zeroline=False
+                ),
+                yaxis=dict(
+                    domain=[0, 0.85],
+                    showgrid=True,
+                    zeroline=False
+                ),
+                showlegend=False
+            )
+            
+            # Create x histogram
+            scatter_fig.add_trace(go.Histogram(
+                x=df[col1],
+                name=col1,
+                marker=dict(color='rgba(64, 83, 196, 0.7)'),
+                yaxis="y2",
+                nbinsx=30
+            ))
+            
+            # Create y histogram
+            scatter_fig.add_trace(go.Histogram(
+                y=df[col2],
+                name=col2,
+                marker=dict(color='rgba(64, 83, 196, 0.7)'),
+                xaxis="x2",
+                nbinsy=30
+            ))
+            
+            # Add marginal subplot definitions
+            scatter_fig.update_layout(
+                xaxis2=dict(
+                    domain=[0.85, 1],
+                    showgrid=False,
+                    zeroline=False,
+                    showticklabels=False
+                ),
+                yaxis2=dict(
+                    domain=[0.85, 1],
+                    showgrid=False,
+                    zeroline=False,
+                    showticklabels=False
+                )
+            )
+            
+            # Add scatter plot to result
+            result['scatter'] = json.dumps(scatter_fig.to_dict(), cls=NumpyEncoder)
+            
+        # One numeric, one categorical - create box plot and violin plot
+        elif (type1 == 'numeric' and type2 in ['categorical', 'binary']) or \
+             (type2 == 'numeric' and type1 in ['categorical', 'binary']):
+            
+            # Make sure col1 is categorical and col2 is numeric
+            if type1 == 'numeric':
+                col1, col2 = col2, col1
+                type1, type2 = type2, type1
+            
+            print(f"Creating box plot for categorical {col1} vs numeric {col2}")
+            
+            # Filter out categories with too few samples for meaningful visualization
+            value_counts = df[col1].value_counts()
+            min_samples = 3
+            common_categories = value_counts[value_counts >= min_samples].index
+            
+            # If we have too many categories, limit to the top ones
+            max_categories = 10
+            if len(common_categories) > max_categories:
+                common_categories = value_counts.nlargest(max_categories).index
+                print(f"Limited to top {max_categories} categories for visualization clarity")
+            
+            # Filter dataframe
+            filtered_df = df[df[col1].isin(common_categories)]
+            
+            if len(filtered_df) == 0:
+                return {'message': 'Not enough data for box plot visualization'}
+            
+            # Create box plot
+            box_fig = go.Figure()
+            
+            # Add box plot
+            for category in common_categories:
+                category_data = filtered_df[filtered_df[col1] == category][col2].dropna()
+                
+                if len(category_data) >= min_samples:
+                    box_fig.add_trace(go.Box(
+                        y=category_data,
+                        name=str(category),
+                        boxpoints='outliers',
+                        jitter=0.3,
+                        pointpos=-1.8,
+                        boxmean=True  # Show mean
+                    ))
+            
+            # Update layout
+            box_fig.update_layout(
+                title=f'Box Plot: {col2} by {col1}',
+                xaxis_title=col1,
+                yaxis_title=col2,
+                showlegend=False,
+                template='plotly_white',
+                height=600
+            )
+            
+            # Add box plot to result
+            result['boxplot'] = json.dumps(box_fig.to_dict(), cls=NumpyEncoder)
+            
+            # Create violin plot
+            violin_fig = go.Figure()
+            
+            # Add violin plot
+            for category in common_categories:
+                category_data = filtered_df[filtered_df[col1] == category][col2].dropna()
+                
+                if len(category_data) >= min_samples:
+                    violin_fig.add_trace(go.Violin(
+                        y=category_data,
+                        name=str(category),
+                        box_visible=True,
+                        meanline_visible=True,
+                        points='outliers'
+                    ))
+            
+            # Update layout
+            violin_fig.update_layout(
+                title=f'Violin Plot: {col2} by {col1}',
+                xaxis_title=col1,
+                yaxis_title=col2,
+                showlegend=False,
+                template='plotly_white',
+                height=600
+            )
+            
+            # Add violin plot to result
+            result['violin'] = json.dumps(violin_fig.to_dict(), cls=NumpyEncoder)
+            
+            # Calculate and display statistics
+            category_stats = {}
+            for category in common_categories:
+                category_data = filtered_df[filtered_df[col1] == category][col2].dropna()
+                
+                if len(category_data) >= min_samples:
+                    category_stats[str(category)] = {
+                        'mean': float(category_data.mean()),
+                        'median': float(category_data.median()),
+                        'std': float(category_data.std()),
+                        'count': int(len(category_data))
+                    }
+            
+            result['category_stats'] = category_stats
+            
+        # Both categorical - create heatmap of co-occurrence
+        elif type1 in ['categorical', 'binary'] and type2 in ['categorical', 'binary']:
+            print(f"Creating co-occurrence map for categorical columns: {col1} vs {col2}")
+            
+            # Create contingency table (crosstab)
+            contingency = pd.crosstab(df[col1], df[col2], normalize='all') * 100
+            
+            # Create heatmap
+            heatmap_fig = go.Figure(data=go.Heatmap(
+                z=contingency.values,
+                x=contingency.columns,
+                y=contingency.index,
+                colorscale='Viridis',
+                colorbar=dict(title='% of Total'),
+                hovertemplate='%{y} & %{x}: %{z:.2f}%<extra></extra>'
+            ))
+            
+            # Update layout
+            heatmap_fig.update_layout(
+                title=f'Co-occurrence: {col1} vs {col2}',
+                xaxis_title=col2,
+                yaxis_title=col1,
+                template='plotly_white',
+                height=600,
+                xaxis=dict(tickangle=-45)
+            )
+            
+            # Add heatmap to result
+            result['heatmap'] = json.dumps(heatmap_fig.to_dict(), cls=NumpyEncoder)
+            
+            # Create stacked bar chart for visualization of proportions
+            bar_fig = go.Figure()
+            
+            # Calculate proportions for each category in col1
+            proportions = pd.crosstab(df[col1], df[col2], normalize='index') * 100
+            
+            # Create stacked bar chart
+            categories = proportions.columns
+            for i, category in enumerate(categories):
+                bar_fig.add_trace(go.Bar(
+                    y=proportions.index,
+                    x=proportions[category],
+                    name=str(category),
+                    orientation='h',
+                    marker=dict(
+                        line=dict(width=0)
+                    )
+                ))
+            
+            # Update layout
+            bar_fig.update_layout(
+                title=f'Proportion of {col2} within each {col1} Category',
+                xaxis_title='Percentage (%)',
+                yaxis_title=col1,
+                barmode='stack',
+                showlegend=True,
+                legend_title=col2,
+                template='plotly_white',
+                height=600
+            )
+            
+            # Add bar to result
+            result['stacked_bar'] = json.dumps(bar_fig.to_dict(), cls=NumpyEncoder)
+            
+        else:
+            return {'message': f'Cannot compare columns of types {type1} and {type2}'}
+        
+        return result
+        
+    except Exception as e:
+        print(f"Error in visualize_comparison: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            'message': f'Error generating comparison: {str(e)}'
+        }
+
+def visualize_advanced(df, column_types, plot_type):
+    """
+    Generate advanced visualizations.
+    
+    Args:
+        df: DataFrame containing the data
+        column_types: Dictionary mapping column names to their types
+        plot_type: Type of visualization to generate
+    
+    Returns:
+        Dictionary containing visualization data
+    """
+    result = {}
+    
+    try:
+        print(f"Generating advanced visualization: {plot_type}")
+        
+        # Get numeric columns for analysis
+        numeric_cols = [col for col, type_ in column_types.items() if type_ == 'numeric']
+        print(f"Found {len(numeric_cols)} numeric columns for advanced visualization")
+        
+        if plot_type == 'correlation':
+            # Require at least 2 numeric columns for correlation analysis
+            if len(numeric_cols) < 2:
+                print("Not enough numeric columns for correlation analysis")
+                return {'message': 'At least two numeric columns are required for correlation analysis'}
+            
+            # Limit to top 20 columns for visualization clarity
+            if len(numeric_cols) > 20:
+                print(f"Limiting correlation matrix to 20 columns out of {len(numeric_cols)}")
+                # Use columns with highest variance
+                variances = df[numeric_cols].var().sort_values(ascending=False)
+                numeric_cols = variances.index[:20].tolist()
+            
+            print(f"Creating correlation matrix for columns: {numeric_cols}")
+            # Create correlation matrix
+            corr_matrix = df[numeric_cols].corr()
+            
+            # Create mask for upper triangle (to avoid duplicating information)
+            mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
+            
+            # Convert masked values to NaN for plotly
+            masked_corr = corr_matrix.mask(mask)
+            
+            # Create heatmap
+            heatmap_fig = go.Figure()
+            
+            # Add heatmap trace
+            heatmap_fig.add_trace(go.Heatmap(
+                z=masked_corr.values,
+                x=masked_corr.columns,
+                y=masked_corr.index,
+                colorscale='RdBu_r',  # Red-Blue diverging colorscale
+                zmid=0,  # Center the colorscale at 0
+                colorbar=dict(
+                    title='Correlation',
+                    titleside='right'
+                ),
+                text=np.round(masked_corr.values, 2),  # Show correlation values
+                hovertemplate='%{y} & %{x}<br>Correlation: %{text:.4f}<extra></extra>'
+            ))
+            
+            # Update layout
+            heatmap_fig.update_layout(
+                title='Correlation Matrix',
+                height=800,
+                width=800,
+                template='plotly_white',
+                xaxis=dict(
+                    tickangle=-45,
+                    side='bottom'
+                )
+            )
+            
+            # Add heatmap to result
+            print("Serializing correlation matrix to JSON")
+            result['heatmap'] = json.dumps(heatmap_fig.to_dict(), cls=NumpyEncoder)
+            print(f"JSON serialization complete, length: {len(result['heatmap'])}")
+            
+            # Find highly correlated columns
+            # Extract upper triangle of correlation matrix
+            upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+            
+            # Find pairs with high correlation (absolute value > 0.7)
+            high_corr_pairs = [(col1, col2, corr_matrix.loc[col1, col2]) 
+                                for col1 in corr_matrix.columns 
+                                for col2 in corr_matrix.columns 
+                                if col1 != col2 and abs(corr_matrix.loc[col1, col2]) > 0.7]
+            
+            # Sort by absolute correlation value
+            high_corr_pairs.sort(key=lambda x: abs(x[2]), reverse=True)
+            
+            # Extract top pairs
+            top_pairs = high_corr_pairs[:10]  # Limit to top 10 pairs
+            
+            # Add high correlation pairs to result
+            result['high_corr_pairs'] = [{'col1': col1, 'col2': col2, 'corr': float(corr)} for col1, col2, corr in top_pairs]
+            print(f"Final result keys for correlation: {result.keys()}")
+            
+        elif plot_type == 'pairplot':
+            # Require at least 2 numeric columns for pair plot
+            if len(numeric_cols) < 2:
+                return {'message': 'At least two numeric columns are required for pair plot'}
+            
+            # Limit to top 5 columns for readability (pair plots get very crowded)
+            if len(numeric_cols) > 5:
+                print(f"Limiting pair plot to 5 columns out of {len(numeric_cols)}")
+                # Use columns with highest variance
+                variances = df[numeric_cols].var().sort_values(ascending=False)
+                numeric_cols = variances.index[:5].tolist()
+            
+            # Create pair plot using subplots
+            fig = make_subplots(
+                rows=len(numeric_cols),
+                cols=len(numeric_cols),
+                shared_xaxes=True,
+                shared_yaxes=True,
+                column_titles=numeric_cols,
+                row_titles=numeric_cols,
+                horizontal_spacing=0.02,
+                vertical_spacing=0.02
+            )
+            
+            # Calculate bounds for axis ranges
+            ranges = {}
+            for col in numeric_cols:
+                data = df[col].dropna()
+                if len(data) > 0:
+                    q1, q3 = data.quantile([0.01, 0.99])
+                    iqr = q3 - q1
+                    lower = max(q1 - 1.5 * iqr, data.min())
+                    upper = min(q3 + 1.5 * iqr, data.max())
+                    ranges[col] = (lower, upper)
+            
+            # Fill in the subplots with appropriate charts
+            for i, col1 in enumerate(numeric_cols):
+                for j, col2 in enumerate(numeric_cols):
+                    if i == j:  # Diagonal: Show histogram
+                        fig.add_trace(
+                            go.Histogram(
+                                x=df[col1],
+                                nbinsx=30,
+                                marker=dict(color='rgba(64, 83, 196, 0.7)'),
+                                showlegend=False
+                            ),
+                            row=i+1, col=j+1
+                        )
+                    else:  # Off-diagonal: Show scatter plot
+                        fig.add_trace(
+                            go.Scatter(
+                                x=df[col2],
+                                y=df[col1],
+                                mode='markers',
+                                marker=dict(
+                                    size=4,
+                                    opacity=0.5,
+                                    color='rgba(64, 83, 196, 0.7)'
+                                ),
+                                showlegend=False
+                            ),
+                            row=i+1, col=j+1
+                        )
+                        
+                        # Set axis ranges if defined
+                        if col2 in ranges:
+                            fig.update_xaxes(range=ranges[col2], row=i+1, col=j+1)
+                        if col1 in ranges:
+                            fig.update_yaxes(range=ranges[col1], row=i+1, col=j+1)
+            
+            # Update layout
+            fig.update_layout(
+                title='Pair Plot of Numeric Columns',
+                height=900,
+                width=900,
+                template='plotly_white',
+                showlegend=False
+            )
+            
+            # Add pair plot to result
+            result['pairplot'] = json.dumps(fig.to_dict())
+            
+        elif plot_type == 'distribution':
+            # Require at least 1 numeric column for distribution analysis
+            if not numeric_cols:
+                return {'message': 'No numeric columns available for distribution analysis'}
+            
+            # Limit to top 10 columns for visualization clarity
+            if len(numeric_cols) > 10:
+                print(f"Limiting distribution analysis to 10 columns out of {len(numeric_cols)}")
+                # Use columns with highest variance
+                variances = df[numeric_cols].var().sort_values(ascending=False)
+                numeric_cols = variances.index[:10].tolist()
+            
+            # Create subplots for distribution analysis
+            fig = make_subplots(
+                rows=len(numeric_cols),
+                cols=1,
+                subplot_titles=[f'Distribution of {col}' for col in numeric_cols],
+                vertical_spacing=0.05
+            )
+            
+            # Add distribution plots for each column
+            for i, col in enumerate(numeric_cols):
+                # Get data without NaN values
+                data = df[col].dropna()
+                
+                if len(data) > 0:
+                    # Add histogram
+                    fig.add_trace(
+                        go.Histogram(
+                            x=data,
+                            name=col,
+                            nbinsx=30,
+                            marker=dict(color='rgba(64, 83, 196, 0.7)'),
+                            opacity=0.7,
+                            showlegend=False
+                        ),
+                        row=i+1, col=1
+                    )
+                    
+                    # Add density curve if enough data points
+                    if len(data) > 30 and data.nunique() > 5:
+                        try:
+                            kde = gaussian_kde(data)
+                            x_range = np.linspace(data.min(), data.max(), 100)
+                            density = kde(x_range) * len(data) * (data.max() - data.min()) / 30  # Scale to match histogram
+                            
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=x_range,
+                                    y=density,
+                                    name='KDE',
+                                    line=dict(color='red', width=2),
+                                    showlegend=False
+                                ),
+                                row=i+1, col=1
+                            )
+                            
+                            # Add Q-Q plot for normality check
+                            from scipy import stats
+                            
+                            # Standardize the data
+                            z_scores = (data - data.mean()) / data.std()
+                            
+                            # Calculate Q-Q plot data
+                            qqplot_data = stats.probplot(z_scores, dist="norm", plot=None)
+                            x = np.array([point[0] for point in qqplot_data[0]])
+                            y = np.array([point[1] for point in qqplot_data[0]])
+                            
+                            # Add line for perfect normality
+                            x_line = np.linspace(min(x), max(x), 100)
+                            y_line = x_line
+                            
+                            # Create Q-Q plot in column 2 (adding dynamically)
+                            if i == 0:  # Do this only for the first column to avoid duplicate updates
+                                fig.add_trace(
+                                    go.Scatter(
+                                        x=x,
+                                        y=y,
+                                        mode='markers',
+                                        name='Data Points',
+                                        marker=dict(color='blue', size=6),
+                                        showlegend=False
+                                    ),
+                                    row=1, col=1
+                                )
+                                
+                                fig.add_trace(
+                                    go.Scatter(
+                                        x=x_line,
+                                        y=y_line,
+                                        mode='lines',
+                                        name='Normal Line',
+                                        line=dict(color='red', width=2),
+                                        showlegend=False
+                                    ),
+                                    row=1, col=1
+                                )
+                        except Exception as e:
+                            print(f"Error adding density curve: {str(e)}")
+            
+            # Update layout
+            fig.update_layout(
+                title='Distribution Analysis of Numeric Columns',
+                height=250 * len(numeric_cols),
+                width=900,
+                template='plotly_white',
+                showlegend=False
+            )
+            
+            # Add distribution plot to result
+            result['distribution'] = json.dumps(fig.to_dict(), cls=NumpyEncoder)
+            print(f"Distribution visualization complete, result keys: {result.keys()}")
+            
+            # Add descriptive statistics
+            stats_df = df[numeric_cols].describe().T
+            stats_df['missing'] = df[numeric_cols].isna().sum()
+            stats_df['missing_pct'] = (df[numeric_cols].isna().sum() / len(df) * 100).round(2)
+            
+            # Calculate skewness and kurtosis
+            stats_df['skewness'] = df[numeric_cols].skew()
+            stats_df['kurtosis'] = df[numeric_cols].kurtosis()
+            
+            # Convert to JSON-friendly format
+            stats_json = {}
+            for col in stats_df.index:
+                stats_json[col] = {stat: float(stats_df.loc[col, stat]) for stat in stats_df.columns}
+            
+            result['statistics'] = stats_json
+            
+        elif plot_type == 'anomaly':
+            # Require at least 1 numeric column for anomaly detection
+            if not numeric_cols:
+                print("No numeric columns found for anomaly detection")
+                return {'message': 'No numeric columns available for anomaly detection'}
+            
+            print(f"Starting anomaly detection on {len(numeric_cols)} numeric columns")
+            
+            # Limit to top 10 columns for visualization clarity
+            if len(numeric_cols) > 10:
+                print(f"Limiting anomaly detection to 10 columns out of {len(numeric_cols)}")
+                # Use columns with highest variance
+                variances = df[numeric_cols].var().sort_values(ascending=False)
+                numeric_cols = variances.index[:10].tolist()
+            
+            print(f"Creating subplots for anomaly detection")
+            # Calculate appropriate vertical spacing based on number of rows
+            # vertical_spacing must be less than 1/(rows-1)
+            if len(numeric_cols) > 1:
+                max_spacing = 1.0 / (len(numeric_cols) - 1)
+                # Use 80% of the maximum allowed spacing for safety
+                vertical_spacing = min(0.1, max_spacing * 0.8)
+            else:
+                vertical_spacing = 0.1
+                
+            print(f"Using vertical spacing of {vertical_spacing} for {len(numeric_cols)} subplots")
+            
+            # Create subplots for anomaly detection
+            fig = make_subplots(
+                rows=len(numeric_cols),
+                cols=1,
+                subplot_titles=[f'Anomaly Detection: {col}' for col in numeric_cols],
+                vertical_spacing=vertical_spacing
+            )
+            
+            # Track overall outliers
+            all_outliers = {}
+            
+            # Add scatter plots for each column
+            for i, col in enumerate(numeric_cols):
+                # Get data without NaN values
+                data = df[col].dropna()
+                
+                if len(data) > 0:
+                    # Calculate outlier bounds using IQR method
+                    q1, q3 = data.quantile([0.25, 0.75])
+                    iqr = q3 - q1
+                    lower_bound = q1 - 1.5 * iqr
+                    upper_bound = q3 + 1.5 * iqr
+                    
+                    # Get the median for reference line
+                    median = data.median()
+                    
+                    # Identify outliers
+                    outliers = data[(data < lower_bound) | (data > upper_bound)]
+                    outlier_indices = outliers.index.tolist()
+                    
+                    # Track outliers for this column
+                    all_outliers[col] = {
+                        'count': len(outliers),
+                        'percentage': len(outliers) / len(data) * 100,
+                        'lower_bound': lower_bound,
+                        'upper_bound': upper_bound,
+                        'median': median,
+                        'mean': data.mean(),
+                        'std': data.std()
+                    }
+                    
+                    # Get locations of points that are not outliers
+                    normal_data = data[(data >= lower_bound) & (data <= upper_bound)]
+                    non_outlier_indices = normal_data.index.tolist()
+                    
+                    # Create hover text for scatter plots
+                    hover_text_normal = [f"Value: {data[idx]:.4f}<br>Index: {idx}" for idx in non_outlier_indices]
+                    hover_text_outliers = [f"Value: {data[idx]:.4f}<br>Index: {idx}" for idx in outlier_indices]
+                    
+                    # Create x values (data point indices) for scatter plots
+                    # Scale to 0-1000 range for better visualization
+                    x_normal = np.arange(len(non_outlier_indices))
+                    x_outliers = np.arange(len(outlier_indices))
+                    
+                    # Add scatter plot for normal points
+                    fig.add_trace(
+                        go.Scatter(
+                            x=x_normal,
+                            y=normal_data.values,
+                            mode='markers',
+                            marker=dict(
+                                color='rgba(8, 81, 156, 0.6)',
+                                size=6,
+                                symbol='circle'
+                            ),
+                            name='Normal',
+                            hovertext=hover_text_normal,
+                            hoverinfo='text',
+                            showlegend=i==0  # Only show legend for the first subplot
+                        ),
+                        row=i+1, col=1
+                    )
+                    
+                    # Add scatter plot for outliers
+                    if len(outlier_indices) > 0:
+                        fig.add_trace(
+                            go.Scatter(
+                                x=x_outliers,
+                                y=outliers.values,
+                                mode='markers',
+                                marker=dict(
+                                    color='rgba(219, 64, 82, 0.9)',
+                                    size=8,
+                                    symbol='circle'
+                                ),
+                                name='Anomaly',
+                                hovertext=hover_text_outliers,
+                                hoverinfo='text',
+                                showlegend=i==0  # Only show legend for the first subplot
+                            ),
+                            row=i+1, col=1
+                        )
+                    
+                    # Add horizontal lines for bounds and median
+                    fig.add_shape(
+                        type='line',
+                        x0=0, x1=max(len(x_normal), len(x_outliers)),
+                        y0=lower_bound, y1=lower_bound,
+                        line=dict(color='blue', width=2, dash='dash'),
+                        row=i+1, col=1
+                    )
+                    
+                    fig.add_shape(
+                        type='line',
+                        x0=0, x1=max(len(x_normal), len(x_outliers)),
+                        y0=upper_bound, y1=upper_bound,
+                        line=dict(color='blue', width=2, dash='dash'),
+                        row=i+1, col=1
+                    )
+                    
+                    fig.add_shape(
+                        type='line',
+                        x0=0, x1=max(len(x_normal), len(x_outliers)),
+                        y0=median, y1=median,
+                        line=dict(color='grey', width=1.5),
+                        row=i+1, col=1
+                    )
+                    
+                    # Add legend for lines
+                    if i == 0:
+                        fig.add_trace(
+                            go.Scatter(
+                                x=[None], y=[None],
+                                mode='lines',
+                                line=dict(color='grey', width=1.5),
+                                name='Median'
+                            ),
+                            row=1, col=1
+                        )
+                    
+                    # Add percentage annotation
+                    fig.add_annotation(
+                        x=0.98, y=0.98,
+                        xref='paper', yref='paper',
+                        text=f"Anomalies: {len(outliers)} ({len(outliers) / len(data) * 100:.2f}%)",
+                        showarrow=False,
+                        font=dict(size=12, color='black'),
+                        bgcolor='rgba(255, 255, 255, 0.8)',
+                        bordercolor='black',
+                        borderwidth=1,
+                        borderpad=4,
+                        row=i+1, col=1
+                    )
+                    
+                    # Add threshold information as part of the subplot
+                    threshold_text = f"Upper: {upper_bound:.2f} | Lower: {lower_bound:.2f} | Mean: {data.mean():.2f} | Median: {median:.2f}"
+                    fig.add_annotation(
+                        x=0.5,
+                        y=0.02,
+                        xref=f'x{i+1} domain', 
+                        yref=f'y{i+1} domain',
+                        text=threshold_text,
+                        showarrow=False,
+                        font=dict(size=10, color='black'),
+                        bgcolor='rgba(255, 255, 255, 0.8)',
+                        bordercolor='black',
+                        borderwidth=1,
+                        borderpad=4,
+                        align='center'
+                    )
+                    
+                    # Update x-axis title
+                    fig.update_xaxes(title_text="Data Point Index", row=i+1, col=1)
+                    
+                    # Update y-axis title
+                    fig.update_yaxes(title_text=col, row=i+1, col=1)
+                                        
+                    # Add threshold information as a separate annotation below the plot
+                    # We'll handle this differently to avoid text overlay issues
+                    
+            # Add a single text with thresholds information at the bottom
+            for i, col in enumerate(numeric_cols):
+                if col in all_outliers:
+                    stats = all_outliers[col]
+                    # Add threshold information at bottom but outside the main plot area
+                    fig.add_annotation(
+                        x=0.5, y=-0.15,  # Position it below the plot
+                        xref='paper', yref='paper',
+                        text=f"Upper threshold: {stats['upper_bound']:.2f}  |  Lower threshold: {stats['lower_bound']:.2f}  |  Mean: {stats['mean']:.2f}  |  Median: {stats['median']:.2f}",
+                        showarrow=False,
+                        font=dict(size=10, color='black'),
+                        align='center',
+                        bgcolor='rgba(255, 255, 255, 0.8)',
+                        bordercolor='black',
+                        borderwidth=1,
+                        borderpad=4,
+                        row=i+1, col=1
+                    )
+                    
+                    # Update x-axis title
+                    fig.update_xaxes(title_text="Data Point Index", row=i+1, col=1)
+            
+            # Update layout
+            # Calculate appropriate height based on number of rows
+            base_height_per_subplot = 350  # Base height per subplot
+            total_height = base_height_per_subplot * len(numeric_cols) + 150  # Add padding
+            
+            # For many subplots, reduce individual height to fit screen better
+            if len(numeric_cols) > 4:
+                total_height = 250 * len(numeric_cols) + 150
+            
+            fig.update_layout(
+                title={
+                    'text': 'Anomaly Detection for Numeric Columns',
+                    'y': 0.98,
+                    'x': 0.5,
+                    'xanchor': 'center',
+                    'yanchor': 'top'
+                },
+                height=total_height,  # Dynamic height based on number of subplots
+                width=1000,  # Increased width
+                template='plotly_white',
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom", y=1.02,
+                    xanchor="right", x=1
+                ),
+                margin=dict(
+                    l=80,  # left margin
+                    r=50,  # right margin
+                    t=120,  # top margin
+                    b=100   # bottom margin - adjusted
+                )
+            )
+            
+            # Update subplot title font size and positioning
+            for i in range(len(fig.layout.annotations)):
+                fig.layout.annotations[i].font.size = 14
+            
+            # Add anomaly plot to result
+            result['anomaly'] = json.dumps(fig.to_dict(), cls=NumpyEncoder)
+            
+            # Add outlier statistics with proper conversion to built-in types
+            outlier_stats = {}
+            for col, stats in all_outliers.items():
+                outlier_stats[col] = {
+                    'count': int(stats['count']),
+                    'percentage': float(stats['percentage']),
+                    'lower_bound': float(stats['lower_bound']),
+                    'upper_bound': float(stats['upper_bound']),
+                    'median': float(stats['median']),
+                    'mean': float(stats['mean']),
+                    'std': float(stats['std'])
+                }
+            result['outlier_stats'] = outlier_stats
+            
+        else:
+            return {'message': f'Unsupported plot type: {plot_type}'}
+        
+        return result
+        
+    except Exception as e:
+        print(f"Error in visualize_advanced: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            'message': f'Error generating advanced visualization: {str(e)}'
+        }
+
+def export_plotly_html(fig, output_path):
+    """
+    Export a Plotly figure to an HTML file.
+    
+    Args:
+        fig: Plotly figure object
+        output_path: Path where the HTML file should be saved
+    
+    Returns:
+        str: Path to the saved HTML file
+    """
+    try:
+        # Create the output directory if it doesn't exist
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
+        # Write the figure to HTML
+        fig.write_html(output_path)
+        
+        return output_path
+    except Exception as e:
+        print(f"Error exporting plot to HTML: {str(e)}")
+        raise 
+
+def get_column_statistics(df):
+    """Get statistics for all columns in the dataset."""
+    stats = {}
+    column_types = get_column_types(df)
+    for column in df.columns:
+        col_type = column_types[column]
+        if col_type == 'numeric':
+            stats[column] = {
+                'missing_values': int(df[column].isna().sum()),
+                'unique_values': int(df[column].nunique()),
+                'mean': float(df[column].mean()) if not pd.isna(df[column].mean()) else 0,
+                'median': float(df[column].median()) if not pd.isna(df[column].median()) else 0,
+                'std': float(df[column].std()) if not pd.isna(df[column].std()) else 0,
+                'min': float(df[column].min()) if not pd.isna(df[column].min()) else 0,
+                'max': float(df[column].max()) if not pd.isna(df[column].max()) else 0
+            }
+        elif col_type in ['categorical', 'binary']:
+            value_counts = df[column].value_counts()
+            stats[column] = {
+                'missing_values': int(df[column].isna().sum()),
+                'unique_values': int(df[column].nunique()),
+                'most_common_value': str(value_counts.index[0]) if not value_counts.empty else None,
+                'most_common_count': int(value_counts.iloc[0]) if not value_counts.empty else 0
+            }
+        elif col_type == 'datetime':
+            stats[column] = {
+                'missing_values': int(df[column].isna().sum()),
+                'unique_values': int(df[column].nunique()),
+                'min_date': str(df[column].min()) if not pd.isna(df[column].min()) else None,
+                'max_date': str(df[column].max()) if not pd.isna(df[column].max()) else None
+            }
+        else:  # text or other types
+            stats[column] = {
+                'missing_values': int(df[column].isna().sum()),
+                'unique_values': int(df[column].nunique())
+            }
+    return stats
+
+def save_dataset(df, file_path, file_type='csv'):
+    """
+    Save dataset to file.
+    
+    Args:
+        df: DataFrame to save
+        file_path: Path where the file should be saved
+        file_type: Type of file to save ('csv' or 'excel')
+    
+    Returns:
+        str: Path to the saved file
+    """
+    try:
+        # Create the output directory if it doesn't exist
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        
+        if file_type == 'csv':
+            df.to_csv(file_path, index=False)
+        elif file_type == 'excel':
+            df.to_excel(file_path, index=False)
+        else:
+            raise ValueError(f'Unsupported file type: {file_type}')
+        
+        return file_path
+    except Exception as e:
+        print(f"Error saving dataset: {str(e)}")
+        raise
+
+# Function to test if conditions are working properly
+def test_condition_filtering():
+    """
+    This function tests if the condition filtering is working properly.
+    Run this function to verify that row filtering works as expected.
+    """
+    import pandas as pd
+    print("\n==================================================")
+    print("TESTING CONDITIONAL ROW FILTERING FUNCTIONALITY")
+    print("==================================================")
+    
+    # Create a test DataFrame
+    test_df = pd.DataFrame({
+        'id': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        'num': [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+        'cat': ['a', 'b', 'c', 'a', 'b', 'c', 'a', 'b', 'c', 'd']
+    })
+    
+    print("\nTest DataFrame:")
+    print(test_df)
+    
+    # Test numeric conditions - greater than
+    print("\n\nTEST 1: Numeric condition - Remove rows where 'num' > 50")
+    numeric_condition = [{'type': 'greater_than', 'value': 50}]
+    result1 = apply_numeric_conditions(test_df, 'num', numeric_condition)
+    print("\nExpected result: Only rows with num <= 50 remain")
+    print("Expected ids remaining: 1, 2, 3, 4, 5")
+    
+    # Test categorical include condition
+    print("\n\nTEST 2: Categorical include condition - Remove rows where 'cat' is 'a' or 'b'")
+    cat_include_condition = {'include': ['a', 'b']}
+    result2 = apply_categorical_conditions(test_df, 'cat', cat_include_condition)
+    print("\nExpected result: Only rows with cat NOT 'a' or 'b' remain")
+    print("Expected ids remaining: 3, 6, 9, 10")
+    
+    # Test categorical exclude condition
+    print("\n\nTEST 3: Categorical exclude condition - Remove rows where 'cat' is NOT 'a'")
+    cat_exclude_condition = {'exclude': ['a']}
+    result3 = apply_categorical_conditions(test_df, 'cat', cat_exclude_condition)
+    print("\nExpected result: Only rows with cat = 'a' remain")
+    print("Expected ids remaining: 1, 4, 7")
+    
+    print("\n==================================================")
+    print("TESTING COMPLETE - Check if results match expectations")
+    print("==================================================")
+
+# Uncomment the line below to run the test when this module is loaded
+# test_condition_filtering()

@@ -1,0 +1,1986 @@
+{% extends 'analyzer/base.html' %}
+{% load analyzer_extras %}
+
+{% block title %}Preprocess Dataset - Data Analyzer{% endblock %}
+
+{% block extra_css %}
+<style>
+    :root {
+        --primary-color: #4361ee;
+        --secondary-color: #3f37c9;
+        --accent-color: #4cc9f0;
+        --success-color: #4cc9f0;
+        --warning-color: #f72585;
+        --light-color: #f8f9fa;
+        --dark-color: #212529;
+    }
+    
+    .column-list {
+        max-height: 400px;
+        overflow-y: auto;
+        border-radius: 8px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        margin-bottom: 20px;
+    }
+    
+    .missing-value-badge {
+        font-size: 0.8rem;
+        padding: 0.25rem 0.5rem;
+        border-radius: 50px;
+        background-color: var(--warning-color);
+        color: white;
+    }
+    
+    .column-settings {
+        display: none;
+        background-color: #f8f9fa;
+        border-radius: 8px;
+        padding: 15px;
+        margin-top: 10px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+        transition: all 0.3s ease;
+    }
+    
+    .dropdown-menu {
+        max-height: 300px;
+        overflow-y: auto;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    }
+    
+    .column-chip {
+        background-color: var(--light-color);
+        border-radius: 16px;
+        padding: 5px 12px;
+        margin-right: 5px;
+        margin-bottom: 5px;
+        display: inline-block;
+        font-size: 0.85rem;
+        border: 1px solid rgba(0, 0, 0, 0.1);
+        transition: all 0.2s ease;
+    }
+    
+    .column-chip:hover {
+        background-color: var(--accent-color);
+        color: white;
+        cursor: pointer;
+    }
+    
+    .card {
+        border-radius: 10px;
+        box-shadow: 0 5px 15px rgba(0, 0, 0, 0.08);
+        border: none;
+        transition: transform 0.3s ease, box-shadow 0.3s ease;
+        margin-bottom: 20px;
+    }
+    
+    .card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 8px 25px rgba(0, 0, 0, 0.12);
+    }
+    
+    .card-header {
+        background-color: white;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+        padding: 15px 20px;
+        border-radius: 10px 10px 0 0 !important;
+    }
+    
+    .card-body {
+        padding: 20px;
+    }
+    
+    .form-control, .form-select {
+        border-radius: 8px;
+        padding: 10px;
+        border: 1px solid rgba(0, 0, 0, 0.1);
+        transition: border-color 0.3s ease, box-shadow 0.3s ease;
+    }
+    
+    .form-control:focus, .form-select:focus {
+        border-color: var(--primary-color);
+        box-shadow: 0 0 0 0.2rem rgba(67, 97, 238, 0.25);
+    }
+    
+    .btn {
+        border-radius: 8px;
+        padding: 10px 20px;
+        transition: all 0.3s ease;
+        font-weight: 500;
+    }
+    
+    .btn-primary {
+        background-color: var(--primary-color);
+        border-color: var(--primary-color);
+    }
+    
+    .btn-primary:hover {
+        background-color: var(--secondary-color);
+        border-color: var(--secondary-color);
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+    }
+    
+    .btn-outline-primary {
+        color: var(--primary-color);
+        border-color: var(--primary-color);
+    }
+    
+    .btn-outline-primary:hover {
+        background-color: var(--primary-color);
+        color: white;
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+    }
+    
+    .form-label {
+        font-weight: 500;
+        margin-bottom: 8px;
+        font-size: 0.9rem;
+    }
+    
+    .column-card {
+        cursor: pointer;
+        transition: all 0.3s ease;
+        border: 2px solid transparent;
+    }
+    
+    .column-card:hover {
+        border-color: var(--accent-color);
+    }
+    
+    .column-card.active {
+        border-color: var(--primary-color);
+        background-color: rgba(67, 97, 238, 0.05);
+    }
+    
+    .stats-list {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+    }
+    
+    .stats-list li {
+        padding: 4px 0;
+        display: flex;
+        justify-content: space-between;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+    }
+    
+    .stats-list li:last-child {
+        border-bottom: none;
+    }
+    
+    .action-btn {
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        transition: all 0.2s ease;
+        font-weight: 500;
+        border-radius: 6px;
+    }
+    
+    .action-btn:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+    }
+    
+    .action-btn-primary {
+        padding: 8px 20px;
+        font-weight: 600;
+    }
+    
+    .overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background-color: rgba(0, 0, 0, 0.5);
+        display: none;
+        justify-content: center;
+        align-items: center;
+        z-index: 1000;
+    }
+    
+    .column-detail-panel {
+        display: none;
+        background-color: white;
+        border-radius: 10px;
+        padding: 20px;
+        width: 500px;
+        max-width: 90%;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        z-index: 1001;
+    }
+    
+    .unique-values-container {
+        max-height: 200px;
+        overflow-y: auto;
+        border: 1px solid rgba(0, 0, 0, 0.1);
+        border-radius: 6px;
+        padding: 10px;
+        margin-top: 10px;
+        background-color: #f8f9fa;
+    }
+    
+    .unique-value-badge {
+        display: inline-block;
+        padding: 5px 10px;
+        margin: 3px;
+        background-color: #f0f0f0;
+        border-radius: 20px;
+        font-size: 0.8rem;
+        transition: all 0.2s ease;
+    }
+    
+    .unique-value-badge:hover {
+        background-color: var(--primary-color);
+        color: white;
+        cursor: pointer;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+    <div class="row">
+        <!-- Dataset Info -->
+        <div class="col-12 mb-4">
+            <div class="card">
+                <div class="card-header bg-light d-flex justify-content-between align-items-center">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-info-circle me-2"></i> Dataset Information
+                    </h5>
+                    <div>
+                        <button id="preview-btn" class="btn btn-outline-primary btn-sm me-2" data-bs-toggle="modal" data-bs-target="#preview-modal">
+                            <i class="fas fa-eye me-1"></i> Preview Dataset
+                        </button>
+                        <a href="{% url 'analyzer:download_dataset' dataset.id %}" class="btn btn-outline-success btn-sm me-2">
+                            <i class="fas fa-download me-1"></i> Download Dataset
+                        </a>
+                        <a href="{% url 'analyzer:visualize_dataset' dataset.id %}" class="btn btn-primary btn-sm">
+                            <i class="fas fa-chart-bar me-1"></i> Go to Visualization
+                        </a>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6>Title</h6>
+                            <p>{{ dataset.title }}</p>
+                        </div>
+                        <div class="col-md-6">
+                            <h6>Shape</h6>
+                            <p>{{ dataset.current_shape }}</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Global Preprocessing -->
+        <div class="col-md-4 mb-4">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="card-title mb-0">Global Preprocessing</h5>
+                </div>
+                <div class="card-body">
+                    <form method="post" id="preprocessing-form">
+                        {% csrf_token %}
+                        
+                        <!-- Missing Values -->
+                        <div class="mb-3">
+                            <label class="form-label">Missing Values Strategy</label>
+                            <select name="missing_values_strategy" class="form-select">
+                                <option value="">None</option>
+                                <option value="mean">Mean</option>
+                                <option value="median">Median</option>
+                                <option value="mode">Mode</option>
+                                <option value="ffill">Forward Fill</option>
+                                <option value="bfill">Backward Fill</option>
+                                <option value="drop">Drop Rows</option>
+                            </select>
+                        </div>
+                        
+                        <!-- Fill Value -->
+                        <div class="mb-3">
+                            <label class="form-label">Fill Value</label>
+                            <input type="text" name="fill_value" class="form-control" placeholder="Enter value">
+                        </div>
+                        
+                        <!-- Encoding -->
+                        <div class="mb-3">
+                            <label class="form-label">Encoding Strategy</label>
+                            <select name="encoding_strategy" class="form-select">
+                                <option value="none">None</option>
+                                <option value="label">Label Encoding</option>
+                                <option value="onehot">One-Hot Encoding</option>
+                            </select>
+                        </div>
+                        
+                        <!-- Scaling -->
+                        <div class="mb-3">
+                            <label class="form-label">Scaling Strategy</label>
+                            <select name="scaling_strategy" class="form-select">
+                                <option value="none">None</option>
+                                <option value="standard">Standard Scaling</option>
+                                <option value="minmax">Min-Max Scaling</option>
+                                <option value="robust">Robust Scaling</option>
+                            </select>
+                        </div>
+                        
+                        <!-- Outliers -->
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input type="checkbox" name="handle_outliers" class="form-check-input" id="handle_outliers">
+                                <label class="form-check-label" for="handle_outliers">Handle Outliers</label>
+                            </div>
+                            <select name="outlier_strategy" class="form-select mt-2" disabled>
+                                <option value="cap">Clip Values</option>
+                                <option value="trim">Remove Rows</option>
+                            </select>
+                            <div class="form-text small">Cap: limits outlier values to within IQR-based thresholds. Trim: removes rows containing outliers.</div>
+                        </div>
+                        
+                        <!-- Feature Selection -->
+                        <div class="mb-3">
+                            <label class="form-label">Feature Selection</label>
+                            <select name="feature_selection_strategy" class="form-select">
+                                <option value="none">None</option>
+                                <option value="variance">Variance Threshold</option>
+                                <option value="k_best">K-Best Features</option>
+                            </select>
+                            <input type="number" name="k_best_features" class="form-control mt-2" placeholder="Number of features" value="5" min="1">
+                        </div>
+                        
+                        <!-- PCA -->
+                        <div class="mb-3">
+                            <label class="form-label">PCA Components</label>
+                            <input type="number" name="pca_components" class="form-control" placeholder="Number of components" min="1">
+                        </div>
+                        
+                        <div class="d-flex justify-content-between align-items-center mt-4">
+                            <div>
+                                <a href="{% url 'analyzer:index' %}" class="btn btn-outline-secondary me-2 action-btn">
+                                    <i class="fas fa-arrow-left me-1"></i> Back to Datasets
+                                </a>
+                                <a href="{% url 'analyzer:visualize_dataset' dataset.id %}" class="btn btn-outline-primary action-btn">
+                                    <i class="fas fa-chart-bar me-1"></i> Go to Visualization
+                                </a>
+                            </div>
+                            <button type="submit" class="btn btn-success action-btn action-btn-primary">
+                                <i class="fas fa-check me-1"></i> Apply Preprocessing
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Column-Specific Preprocessing -->
+        <div class="col-md-8 mb-4">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="card-title mb-0">Column-Specific Preprocessing</h5>
+                    <div>
+                        <input type="text" id="column-search" class="form-control form-control-sm" placeholder="Search columns...">
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="row mb-4">
+                        <div class="col-12">
+                            <p class="text-muted mb-3">Select a column to view and edit its preprocessing settings.</p>
+                            <div class="column-grid">
+                                <div class="row row-cols-2 row-cols-md-3 row-cols-lg-4 g-3">
+                                    {% for column in columns %}
+                                    <div class="col column-item" data-column="{{ column }}">
+                                        <div class="card column-card h-100" data-column="{{ column }}">
+                                            <div class="card-body p-3">
+                                                <h6 class="card-title text-truncate mb-1">{{ column }}</h6>
+                                                <small class="text-muted d-block">{{ column_types|get_item:column }}</small>
+                                                {% with stats=column_stats|get_item:column %}
+                                                {% if stats.missing_values > 0 %}
+                                                <span class="badge bg-warning text-dark mt-2">{{ stats.missing_values }} missing</span>
+                                                {% endif %}
+                                                {% endwith %}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Column Detail Panel (for column-specific settings) -->
+                    <div id="column-detail-container" class="d-none">
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center bg-primary text-white">
+                                <h5 class="card-title mb-0" id="selected-column-name">Column Settings</h5>
+                                <button type="button" class="btn-close btn-close-white" id="close-column-detail"></button>
+                            </div>
+                            <div class="alert alert-info m-3">
+                                <div class="d-flex">
+                                    <div class="me-3">
+                                        <i class="fas fa-info-circle fa-2x"></i>
+                                    </div>
+                                    <div>
+                                        <h6 class="alert-heading"><strong>Column-Specific Preprocessing</strong></h6>
+                                        <p class="mb-0">Settings configured here will <strong>only apply to this specific column</strong> and will override any global settings. 
+                                        Use this section to customize preprocessing for individual columns with unique requirements.</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-5">
+                                        <div class="mb-3">
+                                            <h6>Column Analysis</h6>
+                                            <div id="column-stats-container">
+                                                <ul class="stats-list" id="column-stats-list">
+                                                    <!-- Will be populated with JavaScript -->
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-7">
+                                        <div class="mb-3">
+                                            <h6>Preprocessing Settings</h6>
+                                            <div id="column-settings-container">
+                                                <!-- Will be populated with JavaScript -->
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Preview -->
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="card-title mb-0">Data Management</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="d-flex align-items-center mb-3">
+                                <div class="me-3">
+                                    <span class="fw-bold">Original Shape:</span>
+                                    <span class="badge bg-secondary ms-2">{{ dataset.original_shape|default:"Not processed yet" }}</span>
+                                </div>
+                                <i class="fas fa-arrow-right mx-3"></i>
+                                <div>
+                                    <span class="fw-bold">Current Shape:</span>
+                                    <span class="badge bg-primary ms-2">{{ dataset.current_shape }}</span>
+                                </div>
+                            </div>
+                            {% if dataset.has_preprocessing %}
+                            <div class="alert alert-info">
+                                <i class="fas fa-info-circle me-2"></i> This dataset has been preprocessed. You can apply additional preprocessing or download the current state.
+                            </div>
+                            {% endif %}
+                        </div>
+                        <div class="col-md-6">
+                            <p class="text-muted">Click "Preview Dataset" button at the top to see the current state of your dataset. After applying preprocessing, you can download the processed dataset using the "Download Dataset" button.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Preview Modal -->
+<div class="modal fade" id="preview-modal" tabindex="-1" aria-labelledby="previewModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header bg-light">
+                <h5 class="modal-title" id="previewModalLabel">
+                    <i class="fas fa-table me-2"></i> Data Preview - {{ dataset.title }}
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body p-0">
+                <div class="p-3">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <div class="d-flex gap-2" style="max-width: 500px;">
+                            <div class="input-group input-group-sm">
+                                <span class="input-group-text"><i class="fas fa-table"></i></span>
+                                <select class="form-select" id="search-column">
+                                    <option value="">Select column to search...</option>
+                                </select>
+                            </div>
+                            <div class="input-group input-group-sm">
+                                <span class="input-group-text"><i class="fas fa-search"></i></span>
+                                <input type="text" class="form-control" id="data-search" placeholder="Search in selected column..." disabled>
+                            </div>
+                        </div>
+                        <span class="text-muted" id="preview-info">Loading data...</span>
+                    </div>
+                </div>
+                <div class="table-responsive" style="max-height: 60vh;">
+                    <table class="table table-striped table-hover table-sm mb-0" id="preview-table">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Loading...</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Loading...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <a href="{% url 'analyzer:download_dataset' dataset.id %}" class="btn btn-primary">
+                    <i class="fas fa-download me-1"></i> Download Data
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Enable/disable outlier strategy based on checkbox
+    const handleOutliersCheckbox = document.getElementById('handle_outliers');
+    const outlierStrategySelect = document.querySelector('select[name="outlier_strategy"]');
+    
+    if (handleOutliersCheckbox) {
+        handleOutliersCheckbox.addEventListener('change', function() {
+            outlierStrategySelect.disabled = !this.checked;
+        });
+    }
+    
+    // Column search functionality
+    const columnSearch = document.getElementById('column-search');
+    const columnCards = document.querySelectorAll('.column-item');
+    
+    if (columnSearch) {
+        columnSearch.addEventListener('input', function() {
+            const searchTerm = this.value.toLowerCase();
+            
+            columnCards.forEach(card => {
+                const columnName = card.getAttribute('data-column').toLowerCase();
+                if (columnName.includes(searchTerm)) {
+                    card.style.display = '';
+                } else {
+                    card.style.display = 'none';
+                }
+            });
+        });
+    }
+    
+    // Handle column selection
+    const columnDetailContainer = document.getElementById('column-detail-container');
+    const selectedColumnName = document.getElementById('selected-column-name');
+    const columnStatsList = document.getElementById('column-stats-list');
+    const columnSettingsContainer = document.getElementById('column-settings-container');
+    const closeColumnDetail = document.getElementById('close-column-detail');
+    
+    // Store column data
+    const columnData = {};
+    
+    {% for column in columns %}
+    try {
+        columnData['{{ column }}'] = {
+            name: '{{ column }}',
+            type: '{{ column_types|get_item:column }}',
+            stats: JSON.parse('{{ column_stats_json|get_item:column|safe }}')
+        };
+    } catch (e) {
+        console.error('Error parsing stats for column {{ column }}:', e);
+        columnData['{{ column }}'] = {
+            name: '{{ column }}',
+            type: '{{ column_types|get_item:column }}',
+            stats: { missing_values: 0, unique_values: 0 }
+        };
+    }
+    {% endfor %}
+    
+    // Debug output for a sample column
+    if (Object.keys(columnData).length > 0) {
+        const sampleColumn = Object.keys(columnData)[0];
+        console.log(`Sample column data for ${sampleColumn}:`, columnData[sampleColumn]);
+    }
+    
+    // Select column - ensure all column cards have the click handler
+    const allColumnCards = document.querySelectorAll('.column-card');
+    console.log(`Found ${allColumnCards.length} column cards`);
+    
+    allColumnCards.forEach(card => {
+        card.addEventListener('click', function(e) {
+            e.preventDefault();
+            const columnName = this.getAttribute('data-column');
+            console.log(`Column card clicked: ${columnName}`);
+            selectColumn(columnName);
+        });
+    });
+    
+    function selectColumn(columnName) {
+        console.log(`Selecting column: ${columnName}`);
+        
+        try {
+            // Remove active class from all cards
+            document.querySelectorAll('.column-card').forEach(card => {
+                card.classList.remove('active');
+            });
+            
+            // Add active class to selected card
+            const selectedCard = document.querySelector(`.column-card[data-column="${columnName}"]`);
+            if (selectedCard) {
+                selectedCard.classList.add('active');
+            } else {
+                console.warn(`Could not find card for column: ${columnName}`);
+            }
+            
+            // Check if column data exists
+            if (!columnData[columnName]) {
+                console.error(`No data found for column: ${columnName}`);
+                return;
+            }
+            
+            // Update column detail panel
+            if (selectedColumnName) {
+                selectedColumnName.textContent = columnName;
+            }
+            
+            if (columnDetailContainer) {
+                columnDetailContainer.classList.remove('d-none');
+                
+                // Scroll to detail panel
+                columnDetailContainer.scrollIntoView({ behavior: 'smooth' });
+            }
+            
+            // Update column statistics
+            updateColumnStats(columnName);
+            
+            // Update column settings form
+            updateColumnSettingsForm(columnName);
+        } catch (e) {
+            console.error(`Error in selectColumn for ${columnName}:`, e);
+        }
+    }
+    
+    if (closeColumnDetail) {
+        closeColumnDetail.addEventListener('click', function() {
+            columnDetailContainer.classList.add('d-none');
+            document.querySelectorAll('.column-card').forEach(card => {
+                card.classList.remove('active');
+            });
+        });
+    }
+    
+    function updateColumnStats(columnName) {
+        if (!columnStatsList) {
+            console.error('Column stats list element not found');
+            return;
+        }
+        
+        const column = columnData[columnName];
+        if (!column) {
+            console.error(`Column data not found for ${columnName}`);
+            return;
+        }
+        
+        // Debug log column data
+        console.log(`Displaying stats for ${columnName}:`, column.stats);
+        
+        columnStatsList.innerHTML = '';
+        
+        try {
+            if (column.type === 'numeric') {
+                // Format numeric values with appropriate precision
+                appendStatItem('Missing Values', column.stats.missing_values);
+                appendStatItem('Unique Values', column.stats.unique_values);
+                
+                // Handle potential numeric values properly
+                const mean = typeof column.stats.mean === 'number' ? column.stats.mean.toFixed(2) : 'N/A';
+                const median = typeof column.stats.median === 'number' ? column.stats.median.toFixed(2) : 'N/A';
+                const std = typeof column.stats.std === 'number' ? column.stats.std.toFixed(2) : 'N/A';
+                const min = typeof column.stats.min === 'number' ? column.stats.min.toFixed(2) : 'N/A';
+                const max = typeof column.stats.max === 'number' ? column.stats.max.toFixed(2) : 'N/A';
+                
+                appendStatItem('Mean', mean);
+                appendStatItem('Median', median);
+                appendStatItem('Standard Deviation', std);
+                appendStatItem('Minimum', min);
+                appendStatItem('Maximum', max);
+            } 
+            else if (column.type === 'categorical' || column.type === 'binary') {
+                appendStatItem('Missing Values', column.stats.missing_values);
+                appendStatItem('Unique Values', column.stats.unique_values);
+                appendStatItem('Most Common', column.stats.most_common_value || 'N/A');
+                appendStatItem('Most Common Count', column.stats.most_common_count);
+                
+                // Add "Show Unique Values" button for categorical columns
+                const showUniqueBtn = document.createElement('button');
+                showUniqueBtn.className = 'btn btn-sm btn-outline-primary mt-2 w-100';
+                showUniqueBtn.textContent = 'Show Unique Values';
+                showUniqueBtn.setAttribute('data-column', columnName);
+                showUniqueBtn.addEventListener('click', function() {
+                    showUniqueValues(columnName);
+                });
+                columnStatsList.appendChild(showUniqueBtn);
+                
+                // Container for unique values
+                const uniqueValuesContainer = document.createElement('div');
+                uniqueValuesContainer.id = `unique-values-${columnName}`;
+                uniqueValuesContainer.className = 'mt-2 unique-values-container d-none';
+                columnStatsList.appendChild(uniqueValuesContainer);
+            }
+            else if (column.type === 'datetime') {
+                appendStatItem('Missing Values', column.stats.missing_values);
+                appendStatItem('Unique Values', column.stats.unique_values);
+                appendStatItem('Earliest Date', column.stats.min_date || 'N/A');
+                appendStatItem('Latest Date', column.stats.max_date || 'N/A');
+            }
+            else {
+                appendStatItem('Missing Values', column.stats.missing_values);
+                appendStatItem('Unique Values', column.stats.unique_values);
+            }
+        } catch (e) {
+            console.error(`Error updating stats for column ${columnName}:`, e);
+            appendStatItem('Error', 'Could not load statistics');
+        }
+    }
+    
+    function appendStatItem(label, value) {
+        if (!columnStatsList) return;
+        
+        const item = document.createElement('li');
+        item.innerHTML = `
+            <span>${label}:</span>
+            <span class="fw-bold">${value}</span>
+        `;
+        columnStatsList.appendChild(item);
+    }
+    
+    function updateColumnSettingsForm(columnName) {
+        if (!columnSettingsContainer) {
+            console.error('Column settings container not found');
+            return;
+        }
+        
+        const column = columnData[columnName];
+        if (!column) {
+            console.error(`Column data not found for ${columnName}`);
+            return;
+        }
+        
+        let html = '';
+        
+        // Add a clear header with instructions
+        html += `
+            <div class="card bg-light mb-4">
+                <div class="card-body">
+                    <h6 class="d-flex align-items-center mb-2">
+                        <i class="fas fa-sliders-h me-2 text-primary"></i>
+                        <span>Column-Specific Preprocessing Options</span>
+                    </h6>
+                    <p class="mb-0 small">
+                        <i class="fas fa-info-circle me-1 text-primary"></i>
+                        For each option below, you can:
+                    </p>
+                    <ul class="small mb-0 ps-4 mt-1">
+                        <li><strong>Use Global</strong>: Apply the general preprocessing settings</li>
+                        <li><strong>None</strong>: Skip this preprocessing step for this column</li>
+                        <li><strong>Custom</strong>: Choose a specific strategy just for this column</li>
+                    </ul>
+                </div>
+            </div>
+        `;
+        
+        // Missing values strategy
+        html += `
+            <div class="mb-3">
+                <label class="form-label">
+                    <i class="fas fa-eraser me-1 text-primary"></i>
+                    Missing Values Strategy
+                </label>
+                <select name="${columnName}_missing_values_strategy" class="form-select">
+                    <option value="">None</option>
+                    <option value="global">Use Global</option>
+                    <option value="mean" ${column.type === 'numeric' ? '' : 'disabled'}>Mean</option>
+                    <option value="median" ${column.type === 'numeric' ? '' : 'disabled'}>Median</option>
+                    <option value="mode">Mode</option>
+                    <option value="ffill">Forward Fill</option>
+                    <option value="bfill">Backward Fill</option>
+                    <option value="drop">Drop Rows</option>
+                    <option value="constant">Constant Value</option>
+                </select>
+            </div>
+            
+            <div class="mb-3">
+                <label class="form-label">Fill Value (for Constant strategy)</label>
+                <input type="text" name="${columnName}_fill_value" class="form-control" placeholder="Custom fill value">
+            </div>
+            
+            <!-- Encoding Strategy (for categorical columns) -->
+            ${column.type === 'categorical' || column.type === 'binary' ? 
+            `<div class="mb-3">
+                <label class="form-label">
+                    <i class="fas fa-exchange-alt me-1 text-primary"></i>
+                    Encoding Strategy
+                </label>
+                <select name="${columnName}_encoding_strategy" class="form-select">
+                    <option value="global">Use Global Strategy</option>
+                    <option value="none">No Encoding</option>
+                    <option value="label">Label Encoding</option>
+                    <option value="onehot">One-Hot Encoding</option>
+                </select>
+                <div class="form-text small">How to encode this categorical column. Label encoding assigns a numeric value to each category. One-hot encoding creates binary columns for each category.</div>
+            </div>`
+            : ''}
+            
+            <!-- Scaling Strategy (for numeric columns) -->
+            ${column.type === 'numeric' ? 
+            `<div class="mb-3">
+                <label class="form-label">
+                    <i class="fas fa-balance-scale me-1 text-primary"></i>
+                    Scaling Strategy
+                </label>
+                <select name="${columnName}_scaling_strategy" class="form-select">
+                    <option value="global">Use Global Strategy</option>
+                    <option value="none">No Scaling</option>
+                    <option value="standard">Standard Scaling</option>
+                    <option value="minmax">Min-Max Scaling</option>
+                    <option value="robust">Robust Scaling</option>
+                </select>
+                <div class="form-text small">How to scale this numeric column. Standard scaling normalizes to mean=0, std=1. Min-max scaling transforms to range [0,1]. Robust scaling uses medians and quartiles, making it resistant to outliers.</div>
+            </div>
+            
+            <!-- Outlier Handling (for numeric columns) -->
+            <div class="mb-3">
+                <div class="form-check mb-2">
+                    <input type="checkbox" name="${columnName}_handle_outliers" class="form-check-input" id="${columnName}_handle_outliers">
+                    <label class="form-check-label" for="${columnName}_handle_outliers">
+                        <i class="fas fa-filter me-1 text-primary"></i>
+                        Handle Outliers
+                    </label>
+                </div>
+                <select name="${columnName}_outlier_strategy" class="form-select column-outlier-strategy" disabled>
+                    <option value="global">Use Global Strategy</option>
+                    <option value="cap">Clip Outliers</option>
+                    <option value="trim">Remove Outlier Rows</option>
+                </select>
+                <div class="form-text small">Cap: limits outlier values to within IQR-based thresholds. Trim: removes rows containing outliers.</div>
+            </div>`
+            : ''}
+            
+            <!-- Value Replacement -->
+            <div class="mb-4">
+                <h6 class="mb-3">Value Replacement</h6>
+                <div class="card">
+                    <div class="card-header bg-light">
+                        <h6 class="mb-0">Replace Specific Values</h6>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted small mb-3">Replace specific values in this column with new values. This is useful for correcting errors or standardizing categorical values.</p>
+                        
+                        <div class="row g-2 mb-2">
+                            <div class="col-5">
+                                <input type="text" class="form-control form-control-sm original-value" placeholder="Original value">
+                            </div>
+                            <div class="col-5">
+                                <input type="text" class="form-control form-control-sm replacement-value" placeholder="Replacement value">
+                            </div>
+                            <div class="col-2">
+                                <button type="button" class="btn btn-sm btn-outline-primary add-replacement">Add</button>
+                            </div>
+                        </div>
+                        
+                        <div class="replacements-list mt-2">
+                            <!-- Replacements will be added here -->
+                        </div>
+                        
+                        <input type="hidden" name="${columnName}_value_replacements" class="value-replacements-input">
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Condition-based Row Filtering -->
+            <div class="mb-4">
+                <h6 class="mb-3">Condition-based Row Filtering</h6>
+                
+                ${column.type === 'numeric' ? `
+                <!-- Numeric Conditions -->
+                <div class="card mb-3">
+                    <div class="card-header bg-light">
+                        <h6 class="mb-0">Numeric Conditions</h6>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted small mb-3">Filter rows based on numeric conditions. Rows that meet these conditions will be removed from the dataset.</p>
+                        
+                        <div class="row g-2 mb-2">
+                            <div class="col-5">
+                                <select class="form-select form-select-sm numeric-condition-type">
+                                    <option value="">Select condition</option>
+                                    <option value="greater_than">Greater than</option>
+                                    <option value="less_than">Less than</option>
+                                    <option value="equal_to">Equal to</option>
+                                    <option value="not_equal_to">Not equal to</option>
+                                    <option value="between">Between</option>
+                                </select>
+                            </div>
+                            <div class="col-5">
+                                <input type="number" class="form-control form-control-sm numeric-condition-value" placeholder="Value">
+                            </div>
+                            <div class="col-2">
+                                <button type="button" class="btn btn-sm btn-outline-primary add-numeric-condition">Add</button>
+                            </div>
+                        </div>
+                        
+                        <div class="numeric-conditions-list mt-2">
+                            <!-- Conditions will be added here -->
+                        </div>
+                        
+                        <input type="hidden" name="${columnName}_numeric_conditions" class="numeric-conditions-input">
+                    </div>
+                </div>` : ''}
+                
+                ${column.type === 'categorical' || column.type === 'binary' ? `
+                <!-- Categorical Conditions -->
+                <div class="card mb-3">
+                    <div class="card-header bg-light">
+                        <h6 class="mb-0">Categorical Conditions</h6>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted small mb-3">Filter rows based on categorical values. Rows with the values you select will be removed from the dataset.</p>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Filter Type</label>
+                            <select class="form-select form-select-sm categorical-filter-type mb-2">
+                                <option value="include">Remove rows that match these values</option>
+                                <option value="exclude">Remove rows that DO NOT match these values</option>
+                            </select>
+                            
+                            <div class="input-group input-group-sm mb-2">
+                                <input type="text" class="form-control categorical-value-input" placeholder="Enter a value">
+                                <button type="button" class="btn btn-outline-primary add-categorical-value">Add</button>
+                            </div>
+                            
+                            <div class="categorical-values-list mt-2">
+                                <!-- Values will be added here -->
+                            </div>
+                            
+                            <input type="hidden" name="${columnName}_categorical_conditions" class="categorical-conditions-input">
+                        </div>
+                    </div>
+                </div>` : ''}
+
+                ${column.type === 'datetime' ? `
+                <!-- Datetime Conditions -->
+                <div class="card mb-3">
+                    <div class="card-header bg-light">
+                        <h6 class="mb-0">Date/Time Conditions</h6>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted small mb-3">Filter rows based on date conditions. Rows that meet these conditions will be removed from the dataset.</p>
+                        
+                        <div class="row g-2 mb-2">
+                            <div class="col-5">
+                                <select class="form-select form-select-sm datetime-condition-type">
+                                    <option value="">Select condition</option>
+                                    <option value="greater_than">After date</option>
+                                    <option value="less_than">Before date</option>
+                                    <option value="equal_to">Equal to date</option>
+                                    <option value="not_equal_to">Not equal to date</option>
+                                    <option value="between">Between dates</option>
+                                </select>
+                            </div>
+                            <div class="col-5">
+                                <input type="date" class="form-control form-control-sm datetime-condition-value" placeholder="Select date">
+                            </div>
+                            <div class="col-2">
+                                <button type="button" class="btn btn-sm btn-outline-primary add-datetime-condition">Add</button>
+                            </div>
+                        </div>
+                        
+                        <div class="datetime-conditions-list mt-2">
+                            <!-- Conditions will be added here -->
+                        </div>
+                        
+                        <input type="hidden" name="${columnName}_datetime_conditions" class="datetime-conditions-input">
+                    </div>
+                </div>` : ''}
+            </div>
+        `;
+        
+        // Add the column drop and apply buttons to the HTML
+        html += `
+            <div class="mt-4 d-flex justify-content-between">
+                <button type="button" class="btn btn-outline-danger drop-column-btn" data-column="${columnName}">
+                    <i class="fas fa-trash me-1"></i> Drop Column
+                </button>
+                <div>
+                    <form id="column-specific-form" method="post">
+                        {% csrf_token %}
+                        <input type="hidden" name="process_column" value="${columnName}">
+                        <input type="hidden" id="${columnName}_strategy_hidden" name="${columnName}_missing_values_strategy">
+                        <input type="hidden" id="${columnName}_fill_value_hidden" name="${columnName}_fill_value">
+                        <button type="submit" class="btn btn-success btn-lg">
+                            <i class="fas fa-check-circle me-1"></i> Apply to "${columnName}"
+                        </button>
+                    </form>
+                </div>
+            </div>
+        `;
+        
+        columnSettingsContainer.innerHTML = html;
+        
+        // Load existing settings for the column
+        {% if column_preprocessings %}
+        try {
+            const columnPreprocessingsJson = '{{ column_preprocessings|escapejs }}';
+            const columnPreprocessings = JSON.parse(columnPreprocessingsJson);
+            if (columnName in columnPreprocessings) {
+                const settings = columnPreprocessings[columnName];
+                
+                Object.entries(settings).forEach(([key, value]) => {
+                    const input = document.querySelector(`[name="${columnName}_${key}"]`);
+                    if (input) {
+                        if (input.type === 'checkbox') {
+                            input.checked = value;
+                            // If this is the handle_outliers checkbox, also update the dropdown's disabled state
+                            if (key === 'handle_outliers' && input.checked) {
+                                const outlierDropdown = document.querySelector(`select[name="${columnName}_outlier_strategy"]`);
+                                if (outlierDropdown) {
+                                    outlierDropdown.disabled = false;
+                                }
+                            }
+                        } else {
+                            if (value === null) {
+                                input.value = '';
+                            } else {
+                                input.value = value;
+                            }
+                        }
+                    }
+                });
+            }
+        } catch (e) {
+            console.error('Error loading column preprocessings:', e);
+        }
+        {% endif %}
+        
+        // Set up event listener for the outlier handling checkbox
+        const outlierCheckbox = columnSettingsContainer.querySelector(`input[name="${columnName}_handle_outliers"]`);
+        const outlierStrategy = columnSettingsContainer.querySelector(`select[name="${columnName}_outlier_strategy"]`);
+        
+        if (outlierCheckbox && outlierStrategy) {
+            // Initial state - ensure dropdown is properly enabled/disabled based on checkbox
+            outlierStrategy.disabled = !outlierCheckbox.checked;
+            
+            // Add event listener for future changes
+            outlierCheckbox.addEventListener('change', function() {
+                outlierStrategy.disabled = !this.checked;
+                console.log(`Column ${columnName}: Outlier handling ${this.checked ? 'enabled' : 'disabled'}`);
+            });
+        }
+        
+        // Initialize condition inputs and lists
+        const numericConditionsInput = columnSettingsContainer.querySelector('.numeric-conditions-input');
+        const categoricalConditionsInput = columnSettingsContainer.querySelector('.categorical-conditions-input');
+        const datetimeConditionsInput = columnSettingsContainer.querySelector('.datetime-conditions-input');
+        
+        // Initialize condition lists
+        const numericConditionsList = columnSettingsContainer.querySelector('.numeric-conditions-list');
+        const categoricalValuesList = columnSettingsContainer.querySelector('.categorical-values-list');
+        const datetimeConditionsList = columnSettingsContainer.querySelector('.datetime-conditions-list');
+        
+        // Initialize condition data
+        let numericConditions = [];
+        let categoricalConditions = { include: [], exclude: [] };
+        let datetimeConditions = [];
+        
+        // Load existing conditions if available
+        {% if column_preprocessings %}
+        try {
+            const columnPreprocessingsJson = '{{ column_preprocessings|escapejs }}';
+            const columnPreprocessings = JSON.parse(columnPreprocessingsJson);
+            if (columnName in columnPreprocessings) {
+                if (columnPreprocessings[columnName].numeric_conditions) {
+                    try {
+                        numericConditions = columnPreprocessings[columnName].numeric_conditions;
+                        renderNumericConditions();
+                    } catch (e) {
+                        console.error('Error parsing numeric conditions:', e);
+                    }
+                }
+                
+                if (columnPreprocessings[columnName].categorical_conditions) {
+                    try {
+                        categoricalConditions = columnPreprocessings[columnName].categorical_conditions;
+                        renderCategoricalValues();
+                    } catch (e) {
+                        console.error('Error parsing categorical conditions:', e);
+                    }
+                }
+                
+                if (columnPreprocessings[columnName].datetime_conditions) {
+                    try {
+                        datetimeConditions = columnPreprocessings[columnName].datetime_conditions;
+                        renderDatetimeConditions();
+                    } catch (e) {
+                        console.error('Error parsing datetime conditions:', e);
+                    }
+                }
+                
+                if (columnPreprocessings[columnName].value_replacements) {
+                    try {
+                        value_replacements = columnPreprocessings[columnName].value_replacements;
+                        
+                        // Render the value replacements
+                        const replacementsContainer = columnSettingsContainer.querySelector('.replacements-list');
+                        if (replacementsContainer) {
+                            // Update the hidden input first
+                            const replacementsInput = columnSettingsContainer.querySelector('.value-replacements-input');
+                            if (replacementsInput) {
+                                replacementsInput.value = JSON.stringify(value_replacements);
+                            }
+                            
+                            // Render each replacement
+                            value_replacements.forEach(replacement => {
+                                const replacementElement = document.createElement('div');
+                                replacementElement.className = 'alert alert-info alert-dismissible fade show py-2 px-3 my-1';
+                                replacementElement.innerHTML = `
+                                    <small>"${replacement.original}" → "${replacement.replacement || 'empty string'}"</small>
+                                    <button type="button" class="btn-close btn-close-sm" data-bs-dismiss="alert"></button>
+                                    <input type="hidden" data-original="${replacement.original}" data-replacement="${replacement.replacement || ''}">
+                                `;
+                                replacementsContainer.appendChild(replacementElement);
+                            });
+                        }
+                    } catch (e) {
+                        console.error('Error parsing value replacements:', e);
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('Error loading column preprocessings for conditions:', e);
+        }
+        {% endif %}
+        
+        // Add numeric condition
+        if (column.type === 'numeric') {
+            const addNumericConditionBtn = columnSettingsContainer.querySelector('.add-numeric-condition');
+            if (addNumericConditionBtn) {
+                const numericConditionType = columnSettingsContainer.querySelector('.numeric-condition-type');
+                const numericConditionValue = columnSettingsContainer.querySelector('.numeric-condition-value');
+                
+                addNumericConditionBtn.addEventListener('click', function() {
+                    const type = numericConditionType.value;
+                    const value = numericConditionValue.value;
+                    
+                    if (!type || !value) {
+                        alert('Please select a condition type and enter a value');
+                        return;
+                    }
+                    
+                    // Add condition to the list
+                    numericConditions.push({ type, value: parseFloat(value) });
+                    
+                    // Update the hidden input
+                    numericConditionsInput.value = JSON.stringify(numericConditions);
+                    
+                    // Render the conditions
+                    renderNumericConditions();
+                    
+                    // Clear the inputs
+                    numericConditionType.value = '';
+                    numericConditionValue.value = '';
+                });
+                
+                // Render numeric conditions
+                function renderNumericConditions() {
+                    if (!numericConditionsList) return;
+                    
+                    numericConditionsList.innerHTML = '';
+                    
+                    if (numericConditions.length === 0) {
+                        numericConditionsList.innerHTML = '<p class="text-muted small">No conditions added yet.</p>';
+                        return;
+                    }
+                    
+                    numericConditions.forEach((condition, index) => {
+                        const conditionEl = document.createElement('div');
+                        conditionEl.className = 'alert alert-info alert-sm d-flex justify-content-between align-items-center py-2 px-3 mb-2';
+                        
+                        let conditionText = '';
+                        switch (condition.type) {
+                            case 'greater_than':
+                                conditionText = `Greater than ${condition.value}`;
+                                break;
+                            case 'less_than':
+                                conditionText = `Less than ${condition.value}`;
+                                break;
+                            case 'equal_to':
+                                conditionText = `Equal to ${condition.value}`;
+                                break;
+                            case 'not_equal_to':
+                                conditionText = `Not equal to ${condition.value}`;
+                                break;
+                            case 'between':
+                                conditionText = `Between ${condition.min} and ${condition.max}`;
+                                break;
+                        }
+                        
+                        conditionEl.innerHTML = `
+                            <span>${conditionText}</span>
+                            <button type="button" class="btn-close btn-sm" data-index="${index}"></button>
+                        `;
+                        
+                        numericConditionsList.appendChild(conditionEl);
+                        
+                        // Add event listener to remove button
+                        conditionEl.querySelector('.btn-close').addEventListener('click', function() {
+                            const index = parseInt(this.getAttribute('data-index'));
+                            numericConditions.splice(index, 1);
+                            numericConditionsInput.value = JSON.stringify(numericConditions);
+                            renderNumericConditions();
+                        });
+                    });
+                }
+            }
+        }
+        
+        // Add categorical value
+        if (column.type === 'categorical' || column.type === 'binary') {
+            const addCategoricalValueBtn = columnSettingsContainer.querySelector('.add-categorical-value');
+            if (addCategoricalValueBtn) {
+                const categoricalFilterType = columnSettingsContainer.querySelector('.categorical-filter-type');
+                const categoricalValueInput = columnSettingsContainer.querySelector('.categorical-value-input');
+                
+                addCategoricalValueBtn.addEventListener('click', function() {
+                    const filterType = categoricalFilterType.value; // 'include' or 'exclude'
+                    const value = categoricalValueInput.value.trim();
+                    
+                    if (!value) {
+                        alert('Please enter a value');
+                        return;
+                    }
+                    
+                    console.log(`Adding categorical value: ${value} to ${filterType} list`);
+                    
+                    // Initialize the arrays if they don't exist yet
+                    if (!categoricalConditions.include) categoricalConditions.include = [];
+                    if (!categoricalConditions.exclude) categoricalConditions.exclude = [];
+                    
+                    // Add value to the appropriate list
+                    if (!categoricalConditions[filterType].includes(value)) {
+                        categoricalConditions[filterType].push(value);
+                    }
+                    
+                    // Update the hidden input with the JSON string
+                    categoricalConditionsInput.value = JSON.stringify(categoricalConditions);
+                    console.log(`Updated categorical conditions: ${categoricalConditionsInput.value}`);
+                    
+                    // Render the values
+                    renderCategoricalValues();
+                    
+                    // Clear the input
+                    categoricalValueInput.value = '';
+                });
+                
+                // Render categorical values
+                function renderCategoricalValues() {
+                    if (!categoricalValuesList) return;
+                    
+                    categoricalValuesList.innerHTML = '';
+                    
+                    const includeValues = categoricalConditions.include || [];
+                    const excludeValues = categoricalConditions.exclude || [];
+                    
+                    if (includeValues.length === 0 && excludeValues.length === 0) {
+                        categoricalValuesList.innerHTML = '<p class="text-muted small">No values added yet.</p>';
+                        return;
+                    }
+                    
+                    // Render include values
+                    if (includeValues.length > 0) {
+                        const includeHeader = document.createElement('h6');
+                        includeHeader.className = 'mt-2 mb-1 small';
+                        includeHeader.textContent = 'Values to remove (rows with these values will be removed):';
+                        categoricalValuesList.appendChild(includeHeader);
+                        
+                        includeValues.forEach((value, index) => {
+                            const valueEl = document.createElement('div');
+                            valueEl.className = 'badge bg-danger me-1 mb-1 p-2';
+                            valueEl.innerHTML = `
+                                ${value}
+                                <button type="button" class="btn-close btn-close-white btn-sm ms-1" data-type="include" data-index="${index}"></button>
+                            `;
+                            categoricalValuesList.appendChild(valueEl);
+                            
+                            // Add event listener to remove button
+                            valueEl.querySelector('.btn-close').addEventListener('click', function() {
+                                const type = this.getAttribute('data-type');
+                                const index = parseInt(this.getAttribute('data-index'));
+                                categoricalConditions[type].splice(index, 1);
+                                categoricalConditionsInput.value = JSON.stringify(categoricalConditions);
+                                renderCategoricalValues();
+                            });
+                        });
+                    }
+                    
+                    // Render exclude values
+                    if (excludeValues.length > 0) {
+                        const excludeHeader = document.createElement('h6');
+                        excludeHeader.className = 'mt-3 mb-1 small';
+                        excludeHeader.textContent = 'Values to exclude (rows without these values will be removed):';
+                        categoricalValuesList.appendChild(excludeHeader);
+                        
+                        excludeValues.forEach((value, index) => {
+                            const valueEl = document.createElement('div');
+                            valueEl.className = 'badge bg-warning me-1 mb-1 p-2';
+                            valueEl.innerHTML = `
+                                ${value}
+                                <button type="button" class="btn-close btn-close-white btn-sm ms-1" data-type="exclude" data-index="${index}"></button>
+                            `;
+                            categoricalValuesList.appendChild(valueEl);
+                            
+                            // Add event listener to remove button
+                            valueEl.querySelector('.btn-close').addEventListener('click', function() {
+                                const type = this.getAttribute('data-type');
+                                const index = parseInt(this.getAttribute('data-index'));
+                                categoricalConditions[type].splice(index, 1);
+                                categoricalConditionsInput.value = JSON.stringify(categoricalConditions);
+                                renderCategoricalValues();
+                            });
+                        });
+                    }
+                }
+            }
+        }
+
+        // Add datetime condition
+        if (column.type === 'datetime') {
+            const addDatetimeConditionBtn = columnSettingsContainer.querySelector('.add-datetime-condition');
+            if (addDatetimeConditionBtn) {
+                const datetimeConditionType = columnSettingsContainer.querySelector('.datetime-condition-type');
+                const datetimeConditionValue = columnSettingsContainer.querySelector('.datetime-condition-value');
+                
+                addDatetimeConditionBtn.addEventListener('click', function() {
+                    const type = datetimeConditionType.value;
+                    const value = datetimeConditionValue.value;
+                    
+                    if (!type || !value) {
+                        alert('Please select a condition type and select a date');
+                        return;
+                    }
+                    
+                    // Add condition to the list
+                    datetimeConditions.push({ type, value });
+                    
+                    // Update the hidden input
+                    datetimeConditionsInput.value = JSON.stringify(datetimeConditions);
+                    
+                    // Render the conditions
+                    renderDatetimeConditions();
+                    
+                    // Clear the inputs
+                    datetimeConditionType.value = '';
+                    datetimeConditionValue.value = '';
+                });
+            }
+        }
+
+        // Function to render datetime conditions
+        function renderDatetimeConditions() {
+            if (!datetimeConditionsList) return;
+            
+            datetimeConditionsList.innerHTML = '';
+            datetimeConditions.forEach((condition, index) => {
+                const alert = document.createElement('div');
+                alert.className = 'alert alert-info alert-sm mb-2 d-flex justify-content-between align-items-center';
+                alert.innerHTML = `
+                    <span>${getReadableDateCondition(condition.type, condition.value)}</span>
+                    <input type="hidden" data-type="${condition.type}" data-value="${condition.value}">
+                    <button type="button" class="btn-close" aria-label="Close"></button>
+                `;
+                
+                // Add click handler for remove button
+                alert.querySelector('.btn-close').addEventListener('click', function() {
+                    datetimeConditions.splice(index, 1);
+                    datetimeConditionsInput.value = JSON.stringify(datetimeConditions);
+                    renderDatetimeConditions();
+                });
+                
+                datetimeConditionsList.appendChild(alert);
+            });
+        }
+
+        // Function to get readable datetime condition
+        function getReadableDateCondition(type, value) {
+            const formatDate = (dateStr) => {
+                const date = new Date(dateStr);
+                return date.toLocaleDateString();
+            };
+            
+            switch (type) {
+                case 'greater_than': return `After ${formatDate(value)}`;
+                case 'less_than': return `Before ${formatDate(value)}`;
+                case 'equal_to': return `Equal to ${formatDate(value)}`;
+                case 'not_equal_to': return `Not equal to ${formatDate(value)}`;
+                case 'between': 
+                    const dates = value.split(',');
+                    return `Between ${formatDate(dates[0])} and ${formatDate(dates[1])}`;
+                default: return `${type} ${value}`;
+            }
+        }
+
+        // Copy values from the main form to the column-specific form before submission
+        const columnSpecificForm = document.getElementById('column-specific-form');
+        if (columnSpecificForm) {
+            columnSpecificForm.addEventListener('submit', function(event) {
+                // Debug
+                console.log(`Submitting form for column ${columnName}`);
+                
+                // Get selected values and copy to hidden fields
+                const strategyValue = document.querySelector(`select[name="${columnName}_missing_values_strategy"]`).value;
+                const fillValue = document.querySelector(`input[name="${columnName}_fill_value"]`).value;
+                
+                document.getElementById(`${columnName}_strategy_hidden`).value = strategyValue;
+                document.getElementById(`${columnName}_fill_value_hidden`).value = fillValue;
+                
+                // Add hidden fields for conditions
+                if (numericConditionsInput) {
+                    const numericConditionsHidden = document.createElement('input');
+                    numericConditionsHidden.type = 'hidden';
+                    numericConditionsHidden.name = `${columnName}_numeric_conditions`;
+                    numericConditionsHidden.value = numericConditionsInput.value;
+                    this.appendChild(numericConditionsHidden);
+                    console.log(`Added numeric conditions: ${numericConditionsInput.value}`);
+                }
+                
+                if (categoricalConditionsInput) {
+                    const categoricalConditionsHidden = document.createElement('input');
+                    categoricalConditionsHidden.type = 'hidden';
+                    categoricalConditionsHidden.name = `${columnName}_categorical_conditions`;
+                    categoricalConditionsHidden.value = categoricalConditionsInput.value;
+                    this.appendChild(categoricalConditionsHidden);
+                    console.log(`Added categorical conditions: ${categoricalConditionsInput.value}`);
+                }
+                
+                if (datetimeConditionsInput) {
+                    const datetimeConditionsHidden = document.createElement('input');
+                    datetimeConditionsHidden.type = 'hidden';
+                    datetimeConditionsHidden.name = `${columnName}_datetime_conditions`;
+                    datetimeConditionsHidden.value = datetimeConditionsInput.value;
+                    this.appendChild(datetimeConditionsHidden);
+                    console.log(`Added datetime conditions: ${datetimeConditionsInput.value}`);
+                }
+                
+                // Check for other preprocessing settings and add them too
+                const encodingStrategySelect = document.querySelector(`select[name="${columnName}_encoding_strategy"]`);
+                if (encodingStrategySelect) {
+                    const encodingStrategyHidden = document.createElement('input');
+                    encodingStrategyHidden.type = 'hidden';
+                    encodingStrategyHidden.name = `${columnName}_encoding_strategy`;
+                    encodingStrategyHidden.value = encodingStrategySelect.value;
+                    this.appendChild(encodingStrategyHidden);
+                }
+                
+                const scalingStrategySelect = document.querySelector(`select[name="${columnName}_scaling_strategy"]`);
+                if (scalingStrategySelect) {
+                    const scalingStrategyHidden = document.createElement('input');
+                    scalingStrategyHidden.type = 'hidden';
+                    scalingStrategyHidden.name = `${columnName}_scaling_strategy`;
+                    scalingStrategyHidden.value = scalingStrategySelect.value;
+                    this.appendChild(scalingStrategyHidden);
+                }
+                
+                const handleOutliersCheckbox = document.querySelector(`input[name="${columnName}_handle_outliers"]`);
+                if (handleOutliersCheckbox) {
+                    const handleOutliersHidden = document.createElement('input');
+                    handleOutliersHidden.type = 'hidden';
+                    handleOutliersHidden.name = `${columnName}_handle_outliers`;
+                    handleOutliersHidden.value = handleOutliersCheckbox.checked ? 'on' : 'off';
+                    this.appendChild(handleOutliersHidden);
+                }
+                
+                const outlierStrategySelect = document.querySelector(`select[name="${columnName}_outlier_strategy"]`);
+                if (outlierStrategySelect) {
+                    const outlierStrategyHidden = document.createElement('input');
+                    outlierStrategyHidden.type = 'hidden';
+                    outlierStrategyHidden.name = `${columnName}_outlier_strategy`;
+                    outlierStrategyHidden.value = outlierStrategySelect.value;
+                    this.appendChild(outlierStrategyHidden);
+                }
+                
+                // Add value replacements
+                const valueReplacementsInput = document.querySelector(`.value-replacements-input[name="${columnName}_value_replacements"]`);
+                if (valueReplacementsInput) {
+                    const valueReplacementsHidden = document.createElement('input');
+                    valueReplacementsHidden.type = 'hidden';
+                    valueReplacementsHidden.name = `${columnName}_value_replacements`;
+                    valueReplacementsHidden.value = valueReplacementsInput.value;
+                    this.appendChild(valueReplacementsHidden);
+                    console.log(`Added value replacements: ${valueReplacementsInput.value}`);
+                }
+                
+                console.log(`Submitting strategy=${strategyValue}, fill_value=${fillValue} for column ${columnName}`);
+            });
+        }
+        
+        // Add event listener to the drop column button
+        const dropColumnBtn = columnSettingsContainer.querySelector('.drop-column-btn');
+        if (dropColumnBtn) {
+            dropColumnBtn.addEventListener('click', function() {
+                const columnToDrop = this.getAttribute('data-column');
+                if (confirm(`Are you sure you want to drop the column "${columnToDrop}"?`)) {
+                    // Add a hidden input to mark this column for dropping
+                    const dropInput = document.createElement('input');
+                    dropInput.type = 'hidden';
+                    dropInput.name = 'drop_columns';
+                    dropInput.value = columnToDrop;
+                    
+                    const preprocessingForm = document.getElementById('preprocessing-form');
+                    if (preprocessingForm) {
+                        preprocessingForm.appendChild(dropInput);
+                        // Submit the form
+                        preprocessingForm.submit();
+                    } else {
+                        console.error('Preprocessing form not found');
+                    }
+                }
+            });
+        }
+    }
+    
+    // Add event listeners for each column settings container
+    document.querySelectorAll('.column-outlier-strategy').forEach(select => {
+        const checkbox = document.getElementById(select.name.replace('_outlier_strategy', '_handle_outliers'));
+        if (checkbox) {
+            checkbox.addEventListener('change', function() {
+                select.disabled = !this.checked;
+            });
+        }
+    });
+    
+    document.addEventListener('click', function(e) {
+        if (e.target.matches('.numeric-conditions-list .btn-close')) {
+            const container = e.target.closest('.card-body');
+            // Wait for the alert to be removed before updating the input
+            setTimeout(() => {
+                updateNumericConditions(container);
+            }, 50);
+        }
+    });
+    
+    function updateNumericConditions(container) {
+        const conditionsInput = container.querySelector('.numeric-conditions-input');
+        const conditions = [];
+        
+        container.querySelectorAll('.numeric-conditions-list input[type="hidden"]').forEach(input => {
+            conditions.push({
+                type: input.dataset.type,
+                value: input.dataset.value
+            });
+        });
+        
+        conditionsInput.value = JSON.stringify(conditions);
+        console.log(`Updated numeric conditions: ${conditionsInput.value}`);
+    }
+    
+    function getReadableCondition(type, value) {
+        switch (type) {
+            case 'greater_than': return `Greater than ${value}`;
+            case 'less_than': return `Less than ${value}`;
+            case 'equal_to': return `Equal to ${value}`;
+            case 'not_equal_to': return `Not equal to ${value}`;
+            case 'between': 
+                const values = value.split(',');
+                return `Between ${values[0]} and ${values[1]}`;
+            default: return `${type} ${value}`;
+        }
+    }
+    
+    document.addEventListener('click', function(e) {
+        if (e.target.matches('.categorical-values-list .btn-close')) {
+            const container = e.target.closest('.card-body');
+            // Wait for the alert to be removed before updating the input
+            setTimeout(() => {
+                updateCategoricalConditions(container);
+            }, 50);
+        }
+    });
+    
+    // Update categorical filter type when changed
+    document.addEventListener('change', function(e) {
+        if (e.target.matches('.categorical-filter-type')) {
+            const container = e.target.closest('.card-body');
+            updateCategoricalConditions(container);
+        }
+    });
+    
+    function updateCategoricalConditions(container) {
+        const conditionsInput = container.querySelector('.categorical-conditions-input');
+        const filterType = container.querySelector('.categorical-filter-type').value;
+        const values = [];
+        
+        container.querySelectorAll('.categorical-values-list input[type="hidden"]').forEach(input => {
+            values.push(input.dataset.value);
+        });
+        
+        const conditions = {
+            type: filterType,
+            values: values
+        };
+        
+        conditionsInput.value = JSON.stringify(conditions);
+        console.log(`Updated categorical conditions: ${conditionsInput.value}`);
+    }
+    
+    // Handle value replacements
+    document.addEventListener('click', function(e) {
+        if (e.target.matches('.add-replacement')) {
+            const container = e.target.closest('.card-body');
+            const originalValue = container.querySelector('.original-value').value.trim();
+            const replacementValue = container.querySelector('.replacement-value').value.trim();
+            
+            if (!originalValue) {
+                alert('Please enter an original value to replace');
+                return;
+            }
+            
+            // Create the replacement element
+            const replacementElement = document.createElement('div');
+            replacementElement.className = 'alert alert-info alert-dismissible fade show py-2 px-3 my-1';
+            replacementElement.innerHTML = `
+                <small>"${originalValue}" → "${replacementValue || 'empty string'}"</small>
+                <button type="button" class="btn-close btn-close-sm" data-bs-dismiss="alert"></button>
+                <input type="hidden" data-original="${originalValue}" data-replacement="${replacementValue}">
+            `;
+            
+            container.querySelector('.replacements-list').appendChild(replacementElement);
+            
+            // Update the hidden input
+            updateValueReplacements(container);
+            
+            // Clear the input fields
+            container.querySelector('.original-value').value = '';
+            container.querySelector('.replacement-value').value = '';
+        }
+    });
+    
+    // Handle when a replacement is removed
+    document.addEventListener('click', function(e) {
+        if (e.target.matches('.replacements-list .btn-close')) {
+            const container = e.target.closest('.card-body');
+            // Wait for the alert to be removed before updating the input
+            setTimeout(() => {
+                updateValueReplacements(container);
+            }, 50);
+        }
+    });
+    
+    function updateValueReplacements(container) {
+        const replacementsInput = container.querySelector('.value-replacements-input');
+        const replacements = [];
+        
+        container.querySelectorAll('.replacements-list input[type="hidden"]').forEach(input => {
+            replacements.push({
+                original: input.dataset.original,
+                replacement: input.dataset.replacement
+            });
+        });
+        
+        replacementsInput.value = JSON.stringify(replacements);
+        console.log(`Updated value replacements: ${replacementsInput.value}`);
+    }
+    
+    // Column-specific form submission
+    const columnSpecificForm = document.getElementById('column-specific-form');
+    if (columnSpecificForm) {
+        columnSpecificForm.addEventListener('submit', function(event) {
+            const selectedColumn = document.getElementById('selected-column-name').textContent;
+            
+            // Get all form elements for this column
+            const formElements = document.querySelectorAll(`[name^="${selectedColumn}_"]`);
+            
+            // Add hidden inputs to the form for all column settings
+            formElements.forEach(element => {
+                const hiddenInput = document.createElement('input');
+                hiddenInput.type = 'hidden';
+                hiddenInput.name = element.name;
+                
+                if (element.type === 'checkbox') {
+                    hiddenInput.value = element.checked ? 'on' : 'off';
+                } else {
+                    hiddenInput.value = element.value;
+                }
+                
+                this.appendChild(hiddenInput);
+                console.log(`Added: ${element.name} = ${hiddenInput.value}`);
+            });
+        });
+    }
+    
+    // Preview functionality
+    const previewBtn = document.getElementById('preview-btn');
+    const previewTable = document.getElementById('preview-table');
+    const previewInfo = document.getElementById('preview-info');
+    const dataSearch = document.getElementById('data-search');
+    let tableData = null;
+    
+    // Initialize preview modal
+    const previewModal = document.getElementById('preview-modal');
+    let bootstrapModal = null;
+    if (previewModal) {
+        bootstrapModal = new bootstrap.Modal(previewModal);
+    }
+    
+    if (previewBtn) {
+        previewBtn.addEventListener('click', function() {
+            if (previewInfo) {
+                previewInfo.textContent = 'Loading preview...';
+            }
+            
+            // Reset search
+            const searchColumn = document.getElementById('search-column');
+            searchColumn.innerHTML = '<option value="">Select column to search...</option>';
+            dataSearch.value = '';
+            dataSearch.disabled = true;
+            
+            // Load the preview data when modal is shown
+            fetch(`/api/preview/{{ dataset.id }}/`)
+                .then(response => response.json())
+                .then(data => {
+                    // Store the table data for search functionality
+                    tableData = data;
+                    
+                    // Populate column dropdown
+                    data.columns.forEach(column => {
+                        const option = document.createElement('option');
+                        option.value = column;
+                        option.textContent = column;
+                        searchColumn.appendChild(option);
+                    });
+                    
+                    // Render the table
+                    renderPreviewTable(data);
+                    
+                    if (previewInfo) {
+                        previewInfo.textContent = `Showing ${data.preview_rows} of ${data.total_rows} rows`;
+                    }
+                })
+                .catch(error => {
+                    if (previewInfo) {
+                        previewInfo.textContent = 'Error loading preview';
+                    }
+                    console.error('Error:', error);
+                });
+        });
+    }
+    
+    // Data search functionality
+    if (dataSearch) {
+        // Enable/disable search input based on column selection
+        const searchColumn = document.getElementById('search-column');
+        searchColumn.addEventListener('change', function() {
+            dataSearch.disabled = !this.value;
+            dataSearch.value = '';
+            if (tableData) {
+                renderPreviewTable(tableData);
+            }
+        });
+        
+        dataSearch.addEventListener('input', function() {
+            const searchTerm = this.value.toLowerCase();
+            const selectedColumn = searchColumn.value;
+            
+            if (!tableData || !selectedColumn) return;
+            
+            if (searchTerm === '') {
+                // If search is cleared, show original data
+                renderPreviewTable(tableData);
+                return;
+            }
+            
+            // Filter the rows based on search term in selected column
+            const filteredData = {
+                columns: tableData.columns,
+                data: tableData.data.filter(row => {
+                    const value = row[selectedColumn];
+                    return value !== null && String(value).toLowerCase().includes(searchTerm);
+                }),
+                preview_rows: tableData.preview_rows,
+                total_rows: tableData.total_rows
+            };
+            
+            renderPreviewTable(filteredData);
+            if (previewInfo) {
+                previewInfo.textContent = `Showing ${filteredData.data.length} of ${tableData.total_rows} rows (filtered)`;
+            }
+        });
+    }
+    
+    function renderPreviewTable(data) {
+        if (!previewTable) return;
+        
+        // Create table header
+        const thead = document.createElement('thead');
+        thead.className = 'table-light';
+        const headerRow = document.createElement('tr');
+        
+        // Add index column header
+        const indexHeader = document.createElement('th');
+        indexHeader.textContent = '#';
+        headerRow.appendChild(indexHeader);
+        
+        data.columns.forEach(column => {
+            const th = document.createElement('th');
+            th.textContent = column;
+            headerRow.appendChild(th);
+        });
+        
+        thead.appendChild(headerRow);
+        previewTable.innerHTML = '';
+        previewTable.appendChild(thead);
+        
+        // Create table body
+        const tbody = document.createElement('tbody');
+        
+        if (data.data.length === 0) {
+            const tr = document.createElement('tr');
+            const td = document.createElement('td');
+            td.colSpan = data.columns.length + 1;
+            td.textContent = 'No data matches your search criteria';
+            td.className = 'text-center py-3';
+            tr.appendChild(td);
+            tbody.appendChild(tr);
+        } else {
+            data.data.forEach((row, index) => {
+                const tr = document.createElement('tr');
+                
+                // Add index column
+                const indexCell = document.createElement('td');
+                indexCell.textContent = index + 1;
+                tr.appendChild(indexCell);
+                
+                // Add data columns
+                data.columns.forEach(column => {
+                    const td = document.createElement('td');
+                    td.textContent = row[column] === null ? 'null' : row[column];
+                    tr.appendChild(td);
+                });
+                
+                tbody.appendChild(tr);
+            });
+        }
+        
+        previewTable.appendChild(tbody);
+    }
+    
+    // Function to show unique values for a column
+    function showUniqueValues(columnName) {
+        // Get the container where we'll display unique values
+        const container = document.getElementById(`unique-values-${columnName}`);
+        if (!container) return;
+        
+        // Toggle display
+        if (container.classList.contains('d-none')) {
+            // If we're showing values, check if we already have them
+            if (container.innerHTML.trim() === '') {
+                container.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm" role="status"></div> Loading unique values from entire dataset...</div>';
+                
+                // Fetch unique values from our dedicated API endpoint
+                fetch(`/api/unique-values/{{ dataset.id }}/`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRFToken': '{{ csrf_token }}'
+                    },
+                    body: JSON.stringify({ column: columnName })
+                })
+                    .then(response => response.json())
+                    .then(data => {
+                        // Extract unique values for this column
+                        if (!data.unique_values) {
+                            container.innerHTML = '<p class="text-danger">Could not retrieve unique values</p>';
+                            return;
+                        }
+                        
+                        // Get unique values
+                        const uniqueValues = data.unique_values;
+                        
+                        // Display unique values
+                        container.innerHTML = '';
+                        
+                        if (uniqueValues.length === 0) {
+                            container.innerHTML = '<p class="text-muted">No unique values found</p>';
+                            return;
+                        }
+                        
+                        // Add a count label
+                        const countLabel = document.createElement('div');
+                        countLabel.className = 'mb-2 d-flex justify-content-between align-items-center';
+                        countLabel.innerHTML = `
+                            <span class="badge bg-primary">${uniqueValues.length} unique values</span>
+                            <small class="text-muted">Click any value to use it for replacement</small>
+                        `;
+                        container.appendChild(countLabel);
+                        
+                        // Display the values as badges
+                        uniqueValues.forEach(value => {
+                            const badge = document.createElement('span');
+                            badge.className = 'badge bg-light text-dark border me-1 mb-1 unique-value-badge';
+                            badge.textContent = String(value);
+                            
+                            // Add click functionality to use as replacement value
+                            badge.style.cursor = 'pointer';
+                            badge.title = 'Click to use as replacement value';
+                            badge.addEventListener('click', function() {
+                                // Find the original-value input field and set its value
+                                const originalValueInput = document.querySelector('.original-value');
+                                if (originalValueInput) {
+                                    originalValueInput.value = String(value);
+                                    originalValueInput.focus();
+                                    // Scroll to the replacement section
+                                    const replacementSection = document.querySelector('.original-value').closest('.card');
+                                    if (replacementSection) {
+                                        replacementSection.scrollIntoView({ behavior: 'smooth' });
+                                    }
+                                }
+                            });
+                            
+                            container.appendChild(badge);
+                        });
+                        
+                        // Update button text
+                        const button = document.querySelector(`button[data-column="${columnName}"]`);
+                        if (button) button.textContent = 'Hide Unique Values';
+                    })
+                    .catch(error => {
+                        console.error('Error fetching unique values:', error);
+                        container.innerHTML = '<p class="text-danger">Error loading unique values</p>';
+                    });
+            } else {
+                // Update button text
+                const button = document.querySelector(`button[data-column="${columnName}"]`);
+                if (button) button.textContent = 'Hide Unique Values';
+            }
+            
+            container.classList.remove('d-none');
+        } else {
+            container.classList.add('d-none');
+            
+            // Update button text
+            const button = document.querySelector(`button[data-column="${columnName}"]`);
+            if (button) button.textContent = 'Show Unique Values';
+        }
+    }
+});
+</script>
+{% endblock %}

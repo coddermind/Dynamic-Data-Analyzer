@@ -1,0 +1,1710 @@
+{% extends 'analyzer/base.html' %}
+{% load analyzer_extras %}
+
+{% block title %}Visualize Dataset - Data Analyzer{% endblock %}
+
+{% block extra_css %}
+<style>
+    .viz-container {
+        min-height: 500px;
+        position: relative;
+        margin-bottom: 20px;
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        padding-bottom: 40px; /* Add padding to accommodate the download button */
+        box-shadow: 0 3px 6px rgba(0,0,0,0.1);
+        overflow: hidden;
+    }
+    .viz-loader {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(255, 255, 255, 0.8);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 10;
+    }
+    .tab-pane {
+        padding: 20px 0;
+    }
+    /* Make sure the anomaly visualization has enough height for multiple plots */
+    #anomaly_visualization, #anomaly {
+        min-height: 800px;
+    }
+    /* Style for download buttons */
+    .plot-download-btn {
+        position: absolute !important;
+        bottom: 10px !important;
+        right: 10px !important;
+        z-index: 1000 !important;
+        opacity: 0.8;
+    }
+    .plot-download-btn:hover {
+        opacity: 1;
+    }
+    /* Specific styling for anomaly detection */
+    .anomaly-container {
+        background-color: white;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+    .anomaly-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 15px 20px;
+        background-color: #f8f9fa;
+        border-bottom: 1px solid #e0e0e0;
+    }
+    .anomaly-title {
+        font-size: 1.2rem;
+        font-weight: 600;
+        color: #212529;
+        margin: 0;
+    }
+    .anomaly-stats {
+        background-color: white;
+        padding: 15px;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        margin-top: 20px;
+    }
+    .anomaly-stats table {
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+    .anomaly-stats th {
+        background-color: #f8f9fa;
+    }
+    /* Custom styling for anomaly detection plots */
+    .anomaly-plot .modebar {
+        background-color: transparent !important;
+    }
+    .anomaly-plot .svg-container {
+        background-color: #f8f9fa;
+    }
+    /* Blue area styling for anomaly detection */
+    .anomaly-normal-range {
+        fill: rgba(65, 105, 225, 0.1) !important;
+        stroke: none !important;
+    }
+    /* Anomaly point styling */
+    .anomaly-point {
+        stroke: rgba(220, 20, 60, 0.8) !important;
+        stroke-width: 2px !important;
+    }
+    /* Threshold line styling */
+    .threshold-line {
+        stroke: rgba(220, 20, 60, 0.7) !important;
+        stroke-width: 2px !important;
+        stroke-dasharray: 5,5 !important;
+    }
+    /* Median line styling */
+    .median-line {
+        stroke: blue !important;
+        stroke-width: 2px !important;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="{% url 'analyzer:index' %}">Home</a></li>
+                <li class="breadcrumb-item active">Visualize Dataset</li>
+            </ol>
+        </nav>
+
+        <h2 class="mb-4">
+            <i class="fas fa-chart-line me-2"></i> Visualize Dataset: {{ dataset.title }}
+        </h2>
+
+        {% if error %}
+            <div class="alert alert-danger">
+                <i class="fas fa-exclamation-circle me-2"></i> {{ error }}
+            </div>
+        {% else %}
+            <div class="card mb-4">
+                <div class="card-header bg-light d-flex justify-content-between align-items-center">
+                    <h5 class="card-title mb-0">
+                        <i class="fas fa-info-circle me-2"></i> Dataset Information
+                    </h5>
+                    <div>
+                        <button id="previewDatasetBtn" class="btn btn-outline-primary btn-sm me-2">
+                            <i class="fas fa-eye me-1"></i> Preview Dataset
+                        </button>
+                        <a href="{% url 'analyzer:download_dataset' dataset.id %}" class="btn btn-outline-success btn-sm me-2">
+                            <i class="fas fa-download me-1"></i> Download Dataset
+                        </a>
+                    <a href="{% url 'analyzer:preprocess_dataset' dataset.id %}" class="btn btn-primary btn-sm">
+                        <i class="fas fa-cogs me-1"></i> Go to Preprocessing
+                    </a>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-5">
+                            <table class="table table-sm table-bordered">
+                                <tr>
+                                    <th style="width: 35%">Title:</th>
+                                    <td>{{ dataset.title }}</td>
+                                </tr>
+                                <tr>
+                                    <th>File Type:</th>
+                                    <td>{{ dataset.file_type|upper }}</td>
+                                </tr>
+                                <tr>
+                                    <th>Current Size:</th>
+                                    <td>{{ dataset.current_shape }}</td>
+                                </tr>
+                                <tr>
+                                    <th>Column Types:</th>
+                                    <td>
+                                        <span class="badge bg-primary me-1">{{ df_summary.numeric_columns }} Numeric</span>
+                                        <span class="badge bg-success me-1">{{ df_summary.categorical_columns }} Categorical</span>
+                                        <span class="badge bg-info me-1">{{ df_summary.datetime_columns }} Datetime</span>
+                                        <span class="badge bg-secondary">{{ df_summary.text_columns }} Text</span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <th>Missing Values:</th>
+                                    <td>
+                                        {{ df_summary.missing_values }} ({{ df_summary.missing_percentage }}%)
+                                    </td>
+                                </tr>
+                            </table>
+                        </div>
+                        <div class="col-md-7">
+                            <div class="alert alert-info mb-0">
+                                <h6 class="alert-heading"><i class="fas fa-lightbulb me-2"></i> Visualization Guide</h6>
+                                <hr>
+                                <ul class="mb-0 small">
+                                    <li><strong>Single Column:</strong> Analyze distribution of individual columns with histograms, box plots, and bar charts.</li>
+                                    <li><strong>Comparison:</strong> Compare relationships between two columns with scatter plots or categorical analyses.</li>
+                                    <li><strong>Advanced:</strong> Explore correlation matrices, pair plots, and anomaly detection across multiple columns.</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <ul class="nav nav-tabs" id="vizTabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" id="single-column-tab" data-bs-toggle="tab" data-bs-target="#single-column" type="button" role="tab">
+                        <i class="fas fa-chart-bar me-1"></i> Single Column
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="comparison-tab" data-bs-toggle="tab" data-bs-target="#comparison" type="button" role="tab">
+                        <i class="fas fa-chart-scatter me-1"></i> Comparison
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="advanced-tab" data-bs-toggle="tab" data-bs-target="#advanced" type="button" role="tab">
+                        <i class="fas fa-chart-network me-1"></i> Advanced
+                    </button>
+                </li>
+            </ul>
+
+            <div class="tab-content" id="vizTabContent">
+                <!-- Single Column Tab -->
+                <div class="tab-pane fade show active" id="single-column" role="tabpanel">
+                    <div class="row">
+                        <div class="col-md-3">
+                            <div class="card">
+                                <div class="card-header bg-primary text-white">
+                                    <h5 class="card-title mb-0">Select Column</h5>
+                                </div>
+                                <div class="card-body">
+                                    <div class="mb-3">
+                                        <label for="singleColumn" class="form-label">Column:</label>
+                                        <select class="form-select" id="singleColumn">
+                                            <option value="">-- Select Column --</option>
+                                            {% for column in columns %}
+                                                <option value="{{ column }}" data-type="{{ column_types|get_item:column }}">{{ column }}</option>
+                                            {% endfor %}
+                                        </select>
+                                    </div>
+                                    <button id="visualizeSingle" class="btn btn-primary w-100">
+                                        <i class="fas fa-chart-bar me-1"></i> Visualize
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            <div class="card mt-3" id="singleColumnStats" style="display: none;">
+                                <div class="card-header bg-light">
+                                    <h5 class="card-title mb-0">Statistics</h5>
+                                </div>
+                                <div class="card-body p-0">
+                                    <table class="table table-sm table-hover" id="statsTable">
+                                        <!-- Statistics will be inserted here -->
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-md-9">
+                            <div class="card">
+                                <div class="card-header bg-light">
+                                    <h5 class="card-title mb-0" id="singleColumnTitle">Column Visualization</h5>
+                                </div>
+                                <div class="card-body p-0">
+                                    <div class="viz-container" id="singleColumnViz">
+                                        <div class="text-center p-5 text-muted">
+                                            <i class="fas fa-chart-bar fa-4x mb-3"></i>
+                                            <p>Select a column and click Visualize to generate charts.</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Comparison Tab -->
+                <div class="tab-pane fade" id="comparison" role="tabpanel">
+                    <div class="row">
+                        <div class="col-md-3">
+                            <div class="card">
+                                <div class="card-header bg-primary text-white">
+                                    <h5 class="card-title mb-0">Select Columns</h5>
+                                </div>
+                                <div class="card-body">
+                                    <div class="mb-3">
+                                        <label for="comparisonColumn1" class="form-label">Column 1:</label>
+                                        <select class="form-select" id="comparisonColumn1">
+                                            <option value="">-- Select Column --</option>
+                                            {% for column in columns %}
+                                                <option value="{{ column }}">{{ column }}</option>
+                                            {% endfor %}
+                                        </select>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label for="comparisonColumn2" class="form-label">Column 2:</label>
+                                        <select class="form-select" id="comparisonColumn2">
+                                            <option value="">-- Select Column --</option>
+                                            {% for column in columns %}
+                                                <option value="{{ column }}">{{ column }}</option>
+                                            {% endfor %}
+                                        </select>
+                                    </div>
+                                    <button id="visualizeComparison" class="btn btn-primary w-100">
+                                        <i class="fas fa-chart-scatter me-1"></i> Compare
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            <div class="card mt-3" id="comparisonStats" style="display: none;">
+                                <div class="card-header bg-light">
+                                    <h5 class="card-title mb-0">Relationship</h5>
+                                </div>
+                                <div class="card-body">
+                                    <div id="comparisonStatsContent">
+                                        <!-- Stats will be inserted here -->
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-md-9">
+                            <div class="card">
+                                <div class="card-header bg-light">
+                                    <h5 class="card-title mb-0" id="comparisonTitle">Comparison Visualization</h5>
+                                </div>
+                                <div class="card-body p-0">
+                                    <div class="viz-container" id="comparisonViz">
+                                        <div class="text-center p-5 text-muted">
+                                            <i class="fas fa-chart-scatter fa-4x mb-3"></i>
+                                            <p>Select two columns and click Compare to generate relationship charts.</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Advanced Tab -->
+                <div class="tab-pane fade" id="advanced" role="tabpanel">
+                    <div class="row">
+                        <div class="col-md-3">
+                            <div class="card">
+                                <div class="card-header bg-primary text-white">
+                                    <h5 class="card-title mb-0">Advanced Visualization</h5>
+                                </div>
+                                <div class="card-body">
+                                    <div class="mb-3">
+                                        <label for="advancedVizType" class="form-label">Visualization Type:</label>
+                                        <select class="form-select" id="advancedVizType">
+                                            <option value="">-- Select Type --</option>
+                                            <option value="correlation">Correlation Matrix</option>
+                                            <option value="pairplot">Pair Plot</option>
+                                            <option value="distribution">Distribution Analysis</option>
+                                            <option value="anomaly">Anomaly Detection</option>
+                                        </select>
+                                    </div>
+                                    
+                                    <!-- Column selection for anomaly detection (hidden by default) -->
+                                    <div class="mb-3" id="anomalyColumnSelector" style="display: none;">
+                                        <label for="anomalyColumn" class="form-label">
+                                            <i class="fas fa-filter me-1"></i> Select Column for Anomaly Detection:
+                                        </label>
+                                        <select class="form-select form-select-sm" id="anomalyColumn">
+                                            <option value="">-- All Numeric Columns --</option>
+                                            {% for column in columns %}
+                                                {% if column_types|get_item:column == 'numeric' %}
+                                                    <option value="{{ column }}">{{ column }}</option>
+                                                {% endif %}
+                                            {% endfor %}
+                                        </select>
+                                        <div class="form-text text-muted">
+                                            <small>Select a specific numeric column or leave blank to analyze all numeric columns.</small>
+                                        </div>
+                                    </div>
+                                    
+                                    <button id="visualizeAdvanced" class="btn btn-primary w-100">
+                                        <i class="fas fa-chart-network me-1"></i> Generate
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="col-md-9">
+                            <div class="card">
+                                <div class="card-header bg-light">
+                                    <h5 class="card-title mb-0" id="advancedTitle">Advanced Visualization</h5>
+                                </div>
+                                <div class="card-body p-0">
+                                    <div class="viz-container" id="advancedViz">
+                                        <div class="text-center p-5 text-muted">
+                                            <i class="fas fa-chart-network fa-4x mb-3"></i>
+                                            <p>Select a visualization type and click Generate to create advanced analytics charts.</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="mt-4 mb-5">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <a href="{% url 'analyzer:preprocess_dataset' dataset.id %}" class="btn btn-primary">
+                            <i class="fas fa-cogs me-1"></i> Go to Preprocessing
+                        </a>
+                        <a href="{% url 'analyzer:index' %}" class="btn btn-outline-secondary ms-2">
+                            <i class="fas fa-home me-1"></i> Back to Datasets
+                        </a>
+                    </div>
+                    <div>
+                        <button id="footerPreviewBtn" class="btn btn-outline-primary me-2">
+                            <i class="fas fa-eye me-1"></i> Preview Dataset
+                        </button>
+                        <a href="{% url 'analyzer:download_dataset' dataset.id %}" class="btn btn-outline-success">
+                            <i class="fas fa-download me-1"></i> Download Dataset
+                        </a>
+                    </div>
+                </div>
+            </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Dataset Preview Modal -->
+<div class="modal fade" id="previewModal" tabindex="-1" aria-labelledby="previewModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="previewModalLabel">Dataset Preview</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <div class="row">
+                        <div class="col-md-4">
+                            <div class="input-group">
+                                <span class="input-group-text"><i class="fas fa-table"></i></span>
+                                <select class="form-select" id="search-column">
+                                    <option value="">Select column to search...</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="input-group">
+                                <span class="input-group-text"><i class="fas fa-search"></i></span>
+                                <input type="text" class="form-control" id="data-search" placeholder="Search in selected column..." disabled>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="input-group">
+                                <span class="input-group-text"><i class="fas fa-list-ol"></i></span>
+                                <input type="number" class="form-control" id="row-count" placeholder="Number of rows to preview" min="1">
+                                <button class="btn btn-primary" id="load-preview">Preview</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div id="datasetPreviewLoader" class="text-center py-5">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <p class="mt-2">Loading dataset preview...</p>
+                </div>
+                <div id="datasetPreviewContent" style="display: none;">
+                    <div class="alert alert-info">
+                        Showing <span id="previewRowCount">0</span> of <span id="totalRowCount">0</span> rows
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-striped table-hover" id="previewTable">
+                            <thead id="previewTableHead"></thead>
+                            <tbody id="previewTableBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <a id="downloadDatasetBtn" href="{% url 'analyzer:download_dataset' dataset.id %}" class="btn btn-success">
+                    <i class="fas fa-download me-1"></i> Download CSV
+                </a>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    const datasetId = "{{ dataset.id }}";
+    
+    $(document).ready(function() {
+        // Add download functionality to any plotly graph
+        function addDownloadButton(plotId, columnName, plotType) {
+            setTimeout(function() {
+                const plotDiv = document.getElementById(plotId);
+                if (!plotDiv) {
+                    console.error(`Plot div with ID ${plotId} not found`);
+                    return;
+                }
+                
+                // Check if a download button already exists
+                const parentElement = plotDiv.parentElement;
+                const existingBtn = parentElement.querySelector('.plot-download-btn');
+                if (existingBtn) {
+                    console.log(`Removing existing download button for ${plotId}`);
+                    existingBtn.remove(); // Remove existing button to prevent duplicates
+                }
+                
+                const fileName = `${columnName}_${plotType}`;
+                
+                const downloadBtn = document.createElement('button');
+                downloadBtn.innerHTML = '<i class="fas fa-download"></i> Download SVG';
+                downloadBtn.className = 'btn btn-sm btn-primary position-absolute plot-download-btn';
+                
+                downloadBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    
+                    // Show loading indicator
+                    downloadBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Downloading...';
+                    downloadBtn.disabled = true;
+                    
+                    // Frontend-only download approach using SVG
+                    try {
+                        // Get the SVG element from the plot
+                        const svgElement = plotDiv.querySelector('svg');
+                        if (!svgElement) {
+                            throw new Error('SVG element not found in plot');
+                        }
+                        
+                        // Clone the SVG to avoid modifying the displayed one
+                        const svgClone = svgElement.cloneNode(true);
+                        
+                        // Add namespace if not already present
+                        if (!svgClone.getAttribute('xmlns')) {
+                            svgClone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+                        }
+                        
+                        // Get SVG string
+                        const svgData = new XMLSerializer().serializeToString(svgClone);
+                        
+                        // Create blob and downloadable URL
+                        const svgBlob = new Blob([svgData], {type: 'image/svg+xml;charset=utf-8'});
+                        const svgUrl = URL.createObjectURL(svgBlob);
+                        
+                        // Create link and trigger download
+                        const downloadLink = document.createElement('a');
+                        downloadLink.href = svgUrl;
+                        downloadLink.download = fileName + '.svg';
+                        document.body.appendChild(downloadLink);
+                        downloadLink.click();
+                        document.body.removeChild(downloadLink);
+                        
+                        // Clean up
+                        URL.revokeObjectURL(svgUrl);
+                        
+                        // Reset button
+                        downloadBtn.innerHTML = '<i class="fas fa-download"></i> Download SVG';
+                        downloadBtn.disabled = false;
+                    } catch (error) {
+                        console.error('Error downloading SVG:', error);
+                        alert('Failed to download visualization. Please try again.');
+                        downloadBtn.innerHTML = '<i class="fas fa-download"></i> Download SVG';
+                        downloadBtn.disabled = false;
+                    }
+                });
+                
+                // Add button to the plot container
+                parentElement.style.position = 'relative';
+                parentElement.appendChild(downloadBtn);
+                
+                console.log(`Added download button for ${plotId}`);
+            }, 300); // Increased timeout to ensure plots are fully rendered before adding buttons
+        }
+        
+        // Preview button click (for both top and footer buttons)
+        $('#previewDatasetBtn, #footerPreviewBtn').on('click', function() {
+            const previewModal = new bootstrap.Modal(document.getElementById('previewModal'));
+            previewModal.show();
+            
+            // Initialize search and row count
+            let tableData = null;
+            const searchColumn = $('#search-column');
+            const dataSearch = $('#data-search');
+            const rowCount = $('#row-count');
+            
+            // Function to load preview data
+            function loadPreviewData(rows = null) {
+                $('#datasetPreviewLoader').show();
+                $('#datasetPreviewContent').hide();
+                
+                // Construct URL with row count if specified
+                let url = "{% url 'analyzer:preview_dataset' dataset.id %}";
+                if (rows) {
+                    url += `?rows=${rows}`;
+                }
+                
+                // Fetch dataset preview
+                $.ajax({
+                    url: url,
+                    type: 'GET',
+                    success: function(response) {
+                        // Store the data for search functionality
+                        tableData = response;
+                        
+                        // Populate column dropdown if empty
+                        if (searchColumn.find('option').length <= 1) {
+                            searchColumn.find('option:not(:first)').remove();
+                            for (const column of response.columns) {
+                                searchColumn.append(`<option value="${column}">${column}</option>`);
+                            }
+                        }
+                        
+                        // Set row count placeholder
+                        rowCount.attr('placeholder', `Rows (max: ${response.total_rows})`);
+                        rowCount.attr('max', response.total_rows);
+                        
+                        // Render the table
+                        renderPreviewTable(response);
+                        
+                        // Show content
+                        $('#datasetPreviewLoader').hide();
+                        $('#datasetPreviewContent').show();
+                    },
+                    error: function(xhr) {
+                        $('#datasetPreviewLoader').hide();
+                        $('#datasetPreviewContent').html(`
+                            <div class="alert alert-danger">
+                                <i class="fas fa-exclamation-circle me-2"></i> 
+                                Error loading preview: ${xhr.responseJSON?.error || 'Unknown error'}
+                            </div>
+                        `).show();
+                    }
+                });
+            }
+            
+            // Initial load
+            loadPreviewData();
+            
+            // Remove any existing click handlers from the load preview button
+            $('#load-preview').off('click');
+            
+            // Add new click handler for the load preview button
+            $('#load-preview').on('click', function() {
+                const rows = parseInt(rowCount.val());
+                const maxRows = parseInt(rowCount.attr('max'));
+                
+                if (!rows || rows <= 0) {
+                    alert('Please enter a valid number of rows to preview');
+                    return;
+                }
+                
+                if (rows > maxRows) {
+                    alert(`Please enter a number less than or equal to ${maxRows}`);
+                    return;
+                }
+                
+                loadPreviewData(rows);
+            });
+            
+            // Handle Enter key press in the row count input
+            rowCount.off('keypress').on('keypress', function(e) {
+                if (e.which === 13) { // Enter key
+                    e.preventDefault();
+                    $('#load-preview').click();
+                }
+            });
+            
+            // Search functionality
+            searchColumn.on('change', function() {
+                dataSearch.val('');
+                dataSearch.prop('disabled', !this.value);
+                if (tableData) {
+                    renderPreviewTable(tableData);
+                }
+            });
+            
+            dataSearch.on('input', function() {
+                if (!tableData) return;
+                
+                const searchTerm = this.value.toLowerCase();
+                const selectedColumn = searchColumn.val();
+                
+                if (!selectedColumn || searchTerm === '') {
+                    renderPreviewTable(tableData);
+                    return;
+                }
+                
+                // Filter the data
+                const filteredData = {
+                    columns: tableData.columns,
+                    data: tableData.data.filter(row => {
+                        const value = row[selectedColumn];
+                        return value !== null && String(value).toLowerCase().includes(searchTerm);
+                    }),
+                    total_rows: tableData.total_rows,
+                    preview_rows: tableData.preview_rows
+                };
+                
+                renderPreviewTable(filteredData, true);
+            });
+        });
+        
+        // Function to render preview table
+        function renderPreviewTable(data, isFiltered = false) {
+            // Create header
+            const tableHead = $('#previewTableHead');
+            tableHead.empty();
+            
+            let headerRow = '<tr>';
+            headerRow += '<th>#</th>'; // Add index column header
+            for (const column of data.columns) {
+                headerRow += `<th>${column}</th>`;
+            }
+            headerRow += '</tr>';
+            tableHead.append(headerRow);
+            
+            // Create body
+            const tableBody = $('#previewTableBody');
+            tableBody.empty();
+            
+            if (data.data.length === 0) {
+                const noDataRow = `<tr><td colspan="${data.columns.length + 1}" class="text-center">No data matches your search criteria</td></tr>`;
+                tableBody.append(noDataRow);
+            } else {
+                // Handle the data array of objects format
+                for (let i = 0; i < data.data.length; i++) {
+                    const row = data.data[i];
+                    let rowHtml = '<tr>';
+                    rowHtml += `<td>${i+1}</td>`; // Start index from 1 for better readability
+                    for (const column of data.columns) {
+                        const value = row[column];
+                        rowHtml += `<td>${value === null ? '<span class="text-muted">null</span>' : value}</td>`;
+                    }
+                    rowHtml += '</tr>';
+                    tableBody.append(rowHtml);
+                }
+            }
+            
+            // Update stats
+            $('#previewRowCount').text(isFiltered ? data.data.length : data.preview_rows);
+            $('#totalRowCount').text(data.total_rows);
+        }
+        
+        // Single Column Visualization
+        $('#visualizeSingle').on('click', function() {
+            const column = $('#singleColumn').val();
+            
+            if (!column) {
+                alert('Please select a column');
+                return;
+            }
+            
+            // Get the column type from the data attributes
+            const columnType = $('#singleColumn option:selected').data('type');
+            
+            $('#singleColumnViz').html('<div class="viz-loader"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div></div>');
+            
+            $.ajax({
+                url: "{% url 'analyzer:visualize_single_column' dataset.id %}",
+                type: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ column: column }),
+                success: function(response) {
+                    console.log("Single column visualization response:", response);
+                    $('#singleColumnTitle').text(`Distribution of ${column}`);
+                    $('#singleColumnViz').empty();
+                    $('#singleColumnStats').show();
+                    
+                    // Create visualizations based on response
+                    if (response.histogram && response.boxplot) {
+                        // Numeric column
+                        const histWrapper = $('<div>').addClass('mb-4');
+                        histWrapper.append('<h5 class="text-muted mb-2">Histogram</h5>');
+                        const histDiv = $('<div>').attr('id', 'histogram').addClass('viz-container');
+                        histWrapper.append(histDiv);
+                        
+                        const scatterWrapper = $('<div>').addClass('mb-4');
+                        scatterWrapper.append('<h5 class="text-muted mb-2">Scatter Plot</h5>');
+                        const scatterDiv = $('<div>').attr('id', 'scatter').addClass('viz-container');
+                        scatterWrapper.append(scatterDiv);
+                        
+                        const boxWrapper = $('<div>').addClass('mb-4');
+                        boxWrapper.append('<h5 class="text-muted mb-2">Box Plot</h5>');
+                        const boxDiv = $('<div>').attr('id', 'boxplot').addClass('viz-container');
+                        boxWrapper.append(boxDiv);
+                        
+                        $('#singleColumnViz').append(histWrapper).append(scatterWrapper).append(boxWrapper);
+                        
+                        Plotly.newPlot('histogram', JSON.parse(response.histogram));
+                        addDownloadButton('histogram', column, 'histogram');
+                        
+                        if (response.scatter) {
+                            Plotly.newPlot('scatter', JSON.parse(response.scatter));
+                            addDownloadButton('scatter', column, 'scatter');
+                        }
+                        
+                        Plotly.newPlot('boxplot', JSON.parse(response.boxplot));
+                        addDownloadButton('boxplot', column, 'boxplot');
+                        
+                        // Display statistics
+                        let statsHtml = '';
+                        for (const [key, value] of Object.entries(response.statistics)) {
+                            if (key !== 'value_counts') {
+                                statsHtml += `<tr><th>${key}</th><td>${value}</td></tr>`;
+                            }
+                        }
+                        
+                        // Add value counts table
+                        if (response.statistics && response.statistics.value_counts) {
+                            statsHtml += `<tr><th colspan="2" class="text-center">Value Counts</th></tr>`;
+                            
+                            // Get the value counts and sort them by count in descending order
+                            const valueCounts = Object.entries(response.statistics.value_counts)
+                                .map(([category, count]) => ({ category, count }));
+                            
+                            // Sort by count in descending order
+                            valueCounts.sort((a, b) => b.count - a.count);
+                            
+                            // Add the sorted value counts to the table
+                            for (const item of valueCounts) {
+                                statsHtml += `<tr><td>${item.category}</td><td>${item.count}</td></tr>`;
+                            }
+                        }
+                        
+                        $('#statsTable').html(statsHtml);
+                    } else if (response.bar) {
+                        if (columnType === 'text') {
+                            // Text column
+                            const barWrapper = $('<div>').addClass('mb-4');
+                            barWrapper.append('<h5 class="text-muted mb-2">Word Frequency</h5>');
+                            const barDiv = $('<div>').attr('id', 'text_bar').addClass('viz-container');
+                            barWrapper.append(barDiv);
+                            $('#singleColumnViz').append(barWrapper);
+                            
+                            Plotly.newPlot('text_bar', JSON.parse(response.bar));
+                            addDownloadButton('text_bar', column, 'bar');
+                        } else {
+                            // Categorical column
+                            const barWrapper = $('<div>').addClass('mb-4');
+                            barWrapper.append('<h5 class="text-muted mb-2">Category Distribution</h5>');
+                            const barDiv = $('<div>').attr('id', 'barplot').addClass('viz-container');
+                            barWrapper.append(barDiv);
+                            $('#singleColumnViz').append(barWrapper);
+                            
+                            console.log("Plotting categorical data for:", column);
+                            
+                            // Parse the bar chart data
+                            const barData = JSON.parse(response.bar);
+                            
+                            console.log("Bar chart data:", barData);
+                            
+                            // Plot the chart with configuration to maintain server-side order
+                            const barConfig = {
+                                displayModeBar: true,
+                                responsive: true
+                            };
+                            
+                            // Ensure the layout has the correct settings for bar display
+                            if (barData && barData.layout) {
+                                // Make sure layout exists
+                                barData.layout = barData.layout || {};
+                                
+                                // Force yaxis to start from zero and show full range
+                                barData.layout.yaxis = barData.layout.yaxis || {};
+                                barData.layout.yaxis.rangemode = 'tozero';
+                                barData.layout.yaxis.autorange = true;
+                                
+                                // Ensure xaxis categories are in the right order
+                                barData.layout.xaxis = barData.layout.xaxis || {};
+                                barData.layout.xaxis.type = 'category';
+                                
+                                // Log the finalized layout
+                                console.log("Finalized bar chart layout:", barData.layout);
+                            }
+                            
+                            Plotly.newPlot('barplot', barData.data, barData.layout, barConfig);
+                            addDownloadButton('barplot', column, 'bar');
+                            
+                            // Display statistics
+                            let statsHtml = '';
+                            for (const [key, value] of Object.entries(response.statistics)) {
+                                if (key !== 'value_counts') {
+                                    statsHtml += `<tr><th>${key}</th><td>${value}</td></tr>`;
+                                }
+                            }
+                            
+                            // Add value counts table
+                            if (response.statistics && response.statistics.value_counts) {
+                                statsHtml += `<tr><th colspan="2" class="text-center">Value Counts</th></tr>`;
+                                
+                                // Get the value counts and sort them by count in descending order
+                                const valueCounts = Object.entries(response.statistics.value_counts)
+                                    .map(([category, count]) => ({ category, count }));
+                                
+                                // Sort by count in descending order
+                                valueCounts.sort((a, b) => b.count - a.count);
+                                
+                                // Add the sorted value counts to the table
+                                for (const item of valueCounts) {
+                                    statsHtml += `<tr><td>${item.category}</td><td>${item.count}</td></tr>`;
+                                }
+                            }
+                            
+                            $('#statsTable').html(statsHtml);
+                        }
+                    } else if (response.timeseries) {
+                        // Datetime column
+                        const timeWrapper = $('<div>').addClass('mb-4');
+                        timeWrapper.append('<h5 class="text-muted mb-2">Time Series</h5>');
+                        const timeDiv = $('<div>').attr('id', 'timeseries').addClass('viz-container');
+                        timeWrapper.append(timeDiv);
+                        $('#singleColumnViz').append(timeWrapper);
+                        
+                        Plotly.newPlot('timeseries', JSON.parse(response.timeseries));
+                        
+                        // Add calendar heatmap if available
+                        if (response.calendar) {
+                            const calendarWrapper = $('<div>').addClass('mb-4');
+                            calendarWrapper.append('<h5 class="text-muted mb-2">Calendar Heatmap</h5>');
+                            const calendarDiv = $('<div>').attr('id', 'calendar').addClass('viz-container');
+                            calendarWrapper.append(calendarDiv);
+                            $('#singleColumnViz').append(calendarWrapper);
+                            
+                            Plotly.newPlot('calendar', JSON.parse(response.calendar));
+                        }
+                        
+                        // Display statistics if available
+                        if (response.statistics) {
+                            $('#singleColumnStats').show();
+                            let statsHtml = '';
+                            for (const [key, value] of Object.entries(response.statistics)) {
+                                if (key !== 'value_counts') {
+                                    statsHtml += `<tr><th>${key}</th><td>${value}</td></tr>`;
+                                }
+                            }
+                            $('#statsTable').html(statsHtml);
+                        }
+                    } else {
+                        // Error or unsupported type
+                        $('#singleColumnViz').html(`<div class="alert alert-warning m-3">${response.message || 'Visualization not available for this column type.'}</div>`);
+                    }
+                },
+                error: function(xhr) {
+                    $('#singleColumnViz').html(`<div class="alert alert-danger m-3">${xhr.responseJSON?.error || 'An error occurred during visualization.'}</div>`);
+                }
+            });
+        });
+        
+        // Comparison Visualization
+        $('#visualizeComparison').on('click', function() {
+            const column1 = $('#comparisonColumn1').val();
+            const column2 = $('#comparisonColumn2').val();
+            
+            if (!column1 || !column2) {
+                alert('Please select both columns');
+                return;
+            }
+            
+            if (column1 === column2) {
+                alert('Please select different columns for comparison');
+                return;
+            }
+            
+            $('#comparisonViz').html('<div class="viz-loader"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div></div>');
+            
+            $.ajax({
+                url: "{% url 'analyzer:visualize_comparison' dataset.id %}",
+                type: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ columns: [column1, column2] }),
+                success: function(response) {
+                    console.log("Comparison response:", response);
+                    $('#comparisonTitle').text(`Comparison: ${column1} vs ${column2}`);
+                    $('#comparisonViz').empty();
+                    $('#comparisonStats').show();
+                    
+                    // Create visualizations based on response
+                    if (response.scatter) {
+                        try {
+                            // Numeric vs Numeric
+                            const scatterWrapper = $('<div>').addClass('mb-4');
+                            scatterWrapper.append('<h5 class="text-muted mb-2">Scatter Plot</h5>');
+                            const scatterDiv = $('<div>').attr('id', 'scatterplot').addClass('viz-container');
+                            scatterWrapper.append(scatterDiv);
+                            $('#comparisonViz').append(scatterWrapper);
+                            
+                            console.log("Parsing scatter plot data");
+                            const scatterData = JSON.parse(response.scatter);
+                            console.log("Scatter data:", scatterData);
+                            
+                            Plotly.newPlot('scatterplot', scatterData);
+                            addDownloadButton('scatterplot', `${column1}_vs_${column2}`, 'scatter');
+                            
+                            // Display correlation
+                            const correlation = typeof response.correlation === 'number' ? 
+                                response.correlation.toFixed(4) : 'N/A';
+                            
+                            $('#comparisonStatsContent').html(`
+                                <div class="alert alert-info">
+                                    <strong>Correlation:</strong> ${correlation}
+                                </div>
+                            `);
+                        } catch (e) {
+                            console.error("Error plotting scatter:", e);
+                            $('#comparisonViz').html(`<div class="alert alert-danger m-3">Error plotting scatter: ${e.message}</div>`);
+                        }
+                    } else if (response.boxplot && response.heatmap && !response.violin) {
+                        try {
+                            // Categorical vs Datetime (special case)
+                            const boxWrapper = $('<div>').addClass('mb-4');
+                            boxWrapper.append('<h5 class="text-muted mb-2">Date Distribution by Category</h5>');
+                            const boxDiv = $('<div>').attr('id', 'datetime_boxplot').addClass('viz-container');
+                            boxWrapper.append(boxDiv);
+                            $('#comparisonViz').append(boxWrapper);
+                            
+                            console.log("Parsing categorical-datetime boxplot data");
+                            const boxData = JSON.parse(response.boxplot);
+                            console.log("Boxplot data:", boxData);
+                            
+                            if (!boxData || (Array.isArray(boxData) && boxData.length === 0) || 
+                                (boxData.data && boxData.data.length === 0)) {
+                                console.error("Box plot data is empty");
+                                boxWrapper.append('<div class="alert alert-warning">No valid data available for visualization. Try selecting columns with more data points.</div>');
+                            } else {
+                                try {
+                                    // Handle both formats: array of traces or {data, layout} object
+                                    if (Array.isArray(boxData)) {
+                                        Plotly.newPlot('datetime_boxplot', boxData, {
+                                            title: `Date Distribution: ${column2} by ${column1}`,
+                                            xaxis: {type: 'date', title: column2},
+                                            yaxis: {title: column1},
+                                            template: 'plotly_white'
+                                        });
+                                    } else {
+                                        Plotly.newPlot('datetime_boxplot', boxData.data, boxData.layout || {});
+                                    }
+                                    addDownloadButton('datetime_boxplot', `${column1}_vs_${column2}`, 'datetime_boxplot');
+                                } catch (plotError) {
+                                    console.error("Error in Plotly.newPlot for datetime boxplot:", plotError);
+                                    boxWrapper.append(`<div class="alert alert-danger">Error rendering visualization: ${plotError.message}</div>`);
+                                }
+                            }
+                            
+                            // Add heatmap if available
+                            const heatmapWrapper = $('<div>').addClass('mb-4');
+                            heatmapWrapper.append('<h5 class="text-muted mb-2">Frequency Heatmap by Month</h5>');
+                            const heatmapDiv = $('<div>').attr('id', 'datetime_heatmap').addClass('viz-container');
+                            heatmapWrapper.append(heatmapDiv);
+                            $('#comparisonViz').append(heatmapWrapper);
+                            
+                            console.log("Parsing categorical-datetime heatmap data");
+                            const heatmapData = JSON.parse(response.heatmap);
+                            console.log("Heatmap data:", heatmapData);
+                            
+                            if (!heatmapData || (Array.isArray(heatmapData) && heatmapData.length === 0) || 
+                                (heatmapData.data && heatmapData.data.length === 0)) {
+                                console.error("Heatmap data is empty");
+                                heatmapWrapper.append('<div class="alert alert-warning">Not enough time periods available for heatmap visualization.</div>');
+                            } else {
+                                try {
+                                    Plotly.newPlot('datetime_heatmap', heatmapData.data, heatmapData.layout || {});
+                                    addDownloadButton('datetime_heatmap', `${column1}_vs_${column2}_heatmap`, 'heatmap');
+                                } catch (plotError) {
+                                    console.error("Error in Plotly.newPlot for datetime heatmap:", plotError);
+                                    heatmapWrapper.append(`<div class="alert alert-danger">Error rendering heatmap: ${plotError.message}</div>`);
+                                }
+                            }
+                            
+                            // Add explanation about the visualizations
+                            const infoDiv = $('<div>').addClass('alert alert-info mt-3');
+                            infoDiv.html(`
+                                <h5><i class="fas fa-info-circle me-2"></i> About Date Distribution by Category</h5>
+                                <p>These visualizations show how dates in <strong>${column2}</strong> are distributed across different categories of <strong>${column1}</strong>.</p>
+                                <ul>
+                                    <li><strong>Date Distribution:</strong> Shows the spread of dates for each category, with individual points displaying the actual date values.</li>
+                                    <li><strong>Frequency Heatmap:</strong> Displays the count of occurrences for each category by month, helping identify patterns over time.</li>
+                                </ul>
+                            `);
+                            $('#comparisonViz').append(infoDiv);
+                            
+                            $('#comparisonStatsContent').html(`
+                                <div class="alert alert-info">
+                                    <strong>Relationship:</strong> Time distribution across categories of ${column1}
+                                </div>
+                            `);
+                        } catch (e) {
+                            console.error("Error plotting datetime visualizations:", e);
+                            $('#comparisonViz').html(`
+                                <div class="alert alert-danger m-3">
+                                    <h5><i class="fas fa-exclamation-circle me-2"></i> Error plotting visualizations</h5>
+                                    <p>${e.message}</p>
+                                    <p>Try selecting different columns or check if your data contains enough valid points.</p>
+                                </div>
+                            `);
+                        }
+                    } else if (response.boxplot) {
+                        try {
+                            // Categorical vs Numeric
+                            const boxWrapper = $('<div>').addClass('mb-4');
+                            boxWrapper.append('<h5 class="text-muted mb-2">Box Plot</h5>');
+                            const boxDiv = $('<div>').attr('id', 'boxplot').addClass('viz-container');
+                            boxWrapper.append(boxDiv);
+                            
+                            const violinWrapper = $('<div>').addClass('mb-4');
+                            violinWrapper.append('<h5 class="text-muted mb-2">Violin Plot</h5>');
+                            const violinDiv = $('<div>').attr('id', 'violinplot').addClass('viz-container');
+                            violinWrapper.append(violinDiv);
+                            
+                            $('#comparisonViz').append(boxWrapper).append(violinWrapper);
+                            
+                            console.log("Parsing boxplot and violin data");
+                            const boxData = JSON.parse(response.boxplot);
+                            console.log("Box plot data:", boxData);
+                            
+                            if (!boxData || (Array.isArray(boxData) && boxData.length === 0) || 
+                                (boxData.data && boxData.data.length === 0)) {
+                                console.error("Box plot data is empty");
+                                boxWrapper.append('<div class="alert alert-warning">No valid data available for box plot. Try selecting columns with more data points.</div>');
+                            } else {
+                                try {
+                                    // Handle both formats: array of traces or {data, layout} object
+                                    if (Array.isArray(boxData)) {
+                                        Plotly.newPlot('boxplot', boxData, {
+                                            title: `Box Plot: ${column2} by ${column1}`,
+                                            xaxis: {title: column1},
+                                            yaxis: {title: column2},
+                                            template: 'plotly_white'
+                                        });
+                                    } else {
+                                        Plotly.newPlot('boxplot', boxData.data, boxData.layout || {});
+                                    }
+                                    addDownloadButton('boxplot', `${column1}_vs_${column2}`, 'boxplot');
+                                } catch (plotError) {
+                                    console.error("Error in Plotly.newPlot for boxplot:", plotError);
+                                    boxWrapper.append(`<div class="alert alert-danger">Error rendering box plot: ${plotError.message}</div>`);
+                                }
+                            }
+                            
+                            const violinData = JSON.parse(response.violin);
+                            console.log("Violin plot data:", violinData);
+                            
+                            if (!violinData || (Array.isArray(violinData) && violinData.length === 0) || 
+                                (violinData.data && violinData.data.length === 0)) {
+                                console.error("Violin plot data is empty");
+                                violinWrapper.append('<div class="alert alert-warning">No valid data available for violin plot. Try selecting columns with more data points.</div>');
+                            } else {
+                                try {
+                                    // Handle both formats: array of traces or {data, layout} object
+                                    if (Array.isArray(violinData)) {
+                                        Plotly.newPlot('violinplot', violinData, {
+                                            title: `Violin Plot: ${column2} by ${column1}`,
+                                            xaxis: {title: column1},
+                                            yaxis: {title: column2},
+                                            template: 'plotly_white'
+                                        });
+                                    } else {
+                                        Plotly.newPlot('violinplot', violinData.data, violinData.layout || {});
+                                    }
+                                    addDownloadButton('violinplot', `${column1}_vs_${column2}`, 'violin');
+                                } catch (plotError) {
+                                    console.error("Error in Plotly.newPlot for violinplot:", plotError);
+                                    violinWrapper.append(`<div class="alert alert-danger">Error rendering violin plot: ${plotError.message}</div>`);
+                                }
+                            }
+                            
+                            // Add helpful information
+                            const infoDiv = $('<div>').addClass('alert alert-info mt-3');
+                            infoDiv.html(`
+                                <h5><i class="fas fa-info-circle me-2"></i> About Box & Violin Plots</h5>
+                                <p>These plots show how the numeric variable (${column2}) is distributed across different 
+                                categories of ${column1}.</p>
+                                <ul>
+                                    <li><strong>Box Plot:</strong> The box shows the quartiles of the data. The line inside 
+                                    the box represents the median. The whiskers extend to show the rest of the distribution, 
+                                    except for outliers which are plotted as individual points.</li>
+                                    <li><strong>Violin Plot:</strong> Similar to box plots but also show the probability 
+                                    density of the data at different values, smoothed by a kernel density estimator.</li>
+                                </ul>
+                            `);
+                            $('#comparisonViz').append(infoDiv);
+                            
+                            $('#comparisonStatsContent').html(`
+                                <div class="alert alert-info">
+                                    <strong>Relationship:</strong> Distribution of ${column2} across categories of ${column1}
+                                </div>
+                            `);
+                        } catch (e) {
+                            console.error("Error plotting box/violin:", e);
+                            $('#comparisonViz').html(`
+                                <div class="alert alert-danger m-3">
+                                    <h5><i class="fas fa-exclamation-circle me-2"></i> Error plotting visualizations</h5>
+                                    <p>${e.message}</p>
+                                    <p>Try selecting different columns or check if your data contains enough valid points.</p>
+                                </div>
+                            `);
+                        }
+                    } else {
+                        // Error or unsupported type
+                        $('#comparisonViz').html(`<div class="alert alert-warning m-3">${response.message || 'Visualization not available for this comparison type.'}</div>`);
+                    }
+                },
+                error: function(xhr) {
+                    $('#comparisonViz').html(`<div class="alert alert-danger m-3">${xhr.responseJSON?.error || 'An error occurred during visualization.'}</div>`);
+                }
+            });
+        });
+        
+        // Toggle anomaly column selector when visualization type changes
+        $('#advancedVizType').on('change', function() {
+            if ($(this).val() === 'anomaly') {
+                $('#anomalyColumnSelector')
+                    .addClass('animate__animated animate__fadeIn')
+                    .css('display', 'block')
+                    .css('background-color', '#f8f9fa')
+                    .css('padding', '15px')
+                    .css('border-radius', '5px')
+                    .css('border', '1px solid #dee2e6')
+                    .css('margin-top', '10px')
+                    .css('margin-bottom', '15px');
+            } else {
+                $('#anomalyColumnSelector').slideUp(300);
+            }
+        });
+        
+        // Advanced Visualization
+        $('#visualizeAdvanced').on('click', function() {
+            const plotType = $('#advancedVizType').val();
+            
+            if (!plotType) {
+                alert('Please select a visualization type');
+                return;
+            }
+            
+            $('#advancedViz').html('<div class="viz-loader"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div></div>');
+            
+            // Prepare data based on visualization type
+            let requestData = { plot_type: plotType };
+            
+            // Add column for anomaly detection if selected
+            if (plotType === 'anomaly') {
+                const selectedColumn = $('#anomalyColumn').val();
+                if (selectedColumn) {
+                    requestData.column = selectedColumn;
+                }
+            }
+            
+            $.ajax({
+                url: "{% url 'analyzer:visualize_advanced' dataset.id %}",
+                type: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify(requestData),
+                success: function(response) {
+                    $('#advancedViz').empty();
+                    
+                    // Set title based on plot type
+                    if (plotType === 'correlation') {
+                        $('#advancedTitle').text('Correlation Matrix');
+                    } else if (plotType === 'pairplot') {
+                        $('#advancedTitle').text('Pair Plot');
+                    } else if (plotType === 'distribution') {
+                        $('#advancedTitle').text('Distribution Analysis');
+                    } else if (plotType === 'anomaly') {
+                        $('#advancedTitle').text('Anomaly Detection');
+                    }
+                    
+                    // Create visualization based on plot type
+                    if (response.heatmap && plotType === 'correlation') {
+                        // Correlation Matrix
+                        const heatmapWrapper = $('<div>').addClass('mb-4');
+                        heatmapWrapper.append('<h5 class="text-muted mb-2">Correlation Matrix</h5>');
+                        const heatmapDiv = $('<div>').attr('id', 'corr_heatmap').addClass('viz-container');
+                        heatmapWrapper.append(heatmapDiv);
+                        $('#advancedViz').append(heatmapWrapper);
+                        
+                        console.log("Parsing correlation matrix data");
+                        try {
+                            const heatmapData = JSON.parse(response.heatmap);
+                            Plotly.newPlot('corr_heatmap', heatmapData);
+                            addDownloadButton('corr_heatmap', 'correlation_matrix', 'heatmap');
+                            
+                            // Display high correlation pairs if available
+                            if (response.high_corr_pairs && response.high_corr_pairs.length > 0) {
+                                const pairsDiv = $('<div>').addClass('mt-4');
+                                pairsDiv.html(`
+                                    <h5 class="mb-3">Highly Correlated Pairs</h5>
+                                    <div class="table-responsive">
+                                        <table class="table table-sm table-striped table-bordered">
+                                            <thead class="table-light">
+                                                <tr>
+                                                    <th>Column 1</th>
+                                                    <th>Column 2</th>
+                                                    <th>Correlation</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                ${response.high_corr_pairs.map(pair => `
+                                                    <tr>
+                                                        <td>${pair.col1}</td>
+                                                        <td>${pair.col2}</td>
+                                                        <td>${pair.corr.toFixed(4)}</td>
+                                                    </tr>
+                                                `).join('')}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                `);
+                                $('#advancedViz').append(pairsDiv);
+                            }
+                        } catch (error) {
+                            console.error("Error plotting correlation matrix:", error);
+                            $('#advancedViz').html(`<div class="alert alert-danger m-3">Error parsing correlation data: ${error.message}</div>`);
+                        }
+                    } else if (response.pairplot && plotType === 'pairplot') {
+                        // Pair Plot
+                        const pairplotWrapper = $('<div>').addClass('mb-4');
+                        pairplotWrapper.append('<h5 class="text-muted mb-2">Pair Plot</h5>');
+                        const pairplotDiv = $('<div>').attr('id', 'pairplot').addClass('viz-container');
+                        pairplotWrapper.append(pairplotDiv);
+                        $('#advancedViz').append(pairplotWrapper);
+                        
+                        try {
+                            const pairplotData = JSON.parse(response.pairplot);
+                            Plotly.newPlot('pairplot', pairplotData);
+                            addDownloadButton('pairplot', 'pair_plot', 'plot');
+                            
+                            // Add explanation if not available
+                            const infoDiv = $('<div>').addClass('alert alert-info mt-3');
+                            infoDiv.html(`
+                                <h5><i class="fas fa-info-circle me-2"></i> About Pair Plots</h5>
+                                <p>Pair plots show the relationship between pairs of variables in your dataset. 
+                                Each cell in the matrix shows a scatter plot for each pair of numeric variables.</p>
+                                <p>The diagonal shows the distribution of each variable.</p>
+                            `);
+                            $('#advancedViz').append(infoDiv);
+                        } catch (error) {
+                            console.error("Error plotting pair plot:", error);
+                            $('#advancedViz').html(`<div class="alert alert-danger m-3">Error parsing pair plot data: ${error.message}</div>`);
+                        }
+                    } else if (response.distribution && plotType === 'distribution') {
+                        // Distribution Analysis
+                        const distributionWrapper = $('<div>').addClass('mb-4');
+                        distributionWrapper.append('<h5 class="text-muted mb-2">Distribution Analysis</h5>');
+                        const distributionDiv = $('<div>').attr('id', 'distribution').addClass('viz-container');
+                        distributionWrapper.append(distributionDiv);
+                        $('#advancedViz').append(distributionWrapper);
+                        
+                        try {
+                            const distributionData = JSON.parse(response.distribution);
+                            Plotly.newPlot('distribution', distributionData);
+                            addDownloadButton('distribution', 'distribution_analysis', 'plot');
+                            
+                            // Display statistics if available
+                            if (response.statistics) {
+                                const statsDiv = $('<div>').addClass('mt-4');
+                                let statsHtml = `
+                                    <h5 class="mb-3">Descriptive Statistics</h5>
+                                    <div class="table-responsive">
+                                        <table class="table table-sm table-striped table-bordered">
+                                            <thead class="table-light">
+                                                <tr>
+                                                    <th>Column</th>
+                                                    <th>Mean</th>
+                                                    <th>Std Dev</th>
+                                                    <th>Min</th>
+                                                    <th>25%</th>
+                                                    <th>Median</th>
+                                                    <th>75%</th>
+                                                    <th>Max</th>
+                                                    <th>Missing</th>
+                                                    <th>Skewness</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                    `;
+                                    
+                                    for (const [col, stats] of Object.entries(response.statistics)) {
+                                        statsHtml += `
+                                            <tr>
+                                                <td><strong>${col}</strong></td>
+                                                <td>${stats.mean?.toFixed(2) || 'N/A'}</td>
+                                                <td>${stats.std?.toFixed(2) || 'N/A'}</td>
+                                                <td>${stats.min?.toFixed(2) || 'N/A'}</td>
+                                                <td>${stats['25%']?.toFixed(2) || 'N/A'}</td>
+                                                <td>${stats['50%']?.toFixed(2) || 'N/A'}</td>
+                                                <td>${stats['75%']?.toFixed(2) || 'N/A'}</td>
+                                                <td>${stats.max?.toFixed(2) || 'N/A'}</td>
+                                                <td>${stats.missing || 0} (${stats.missing_pct?.toFixed(1) || 0}%)</td>
+                                                <td>${stats.skewness?.toFixed(2) || 'N/A'}</td>
+                                            </tr>
+                                        `;
+                                    }
+                                    
+                                    statsHtml += `
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                `;
+                                
+                                statsDiv.html(statsHtml);
+                                $('#advancedViz').append(statsDiv);
+                            }
+                        } catch (error) {
+                            console.error("Error plotting distribution:", error);
+                            $('#advancedViz').html(`<div class="alert alert-danger m-3">Error parsing distribution data: ${error.message}</div>`);
+                        }
+                    } else if (response.anomaly && plotType === 'anomaly') {
+                        const anomalyWrapper = $('<div>').addClass('mb-4 anomaly-container animate__animated animate__fadeIn');
+                        const headerDiv = $('<div>').addClass('anomaly-header');
+                        
+                        // Get the column name for display
+                        let columnName = $('#anomalyColumn').val();
+                        let displayTitle = columnName ? 
+                            `Anomaly Detection: ${columnName}` : 
+                            'Anomaly Detection Analysis';
+                        
+                        headerDiv.append(`<h5 class="anomaly-title">${displayTitle}</h5>`);
+                        anomalyWrapper.append(headerDiv);
+                        
+                        const anomalyDiv = $('<div>').attr({
+                            'id': 'anomaly',
+                            'class': 'viz-container anomaly-plot'
+                        });
+                        anomalyWrapper.append(anomalyDiv);
+                        $('#advancedViz').append(anomalyWrapper);
+                        
+                        try {
+                            console.log("Parsing anomaly detection data");
+                            const anomalyData = JSON.parse(response.anomaly);
+                            console.log("Anomaly data parsed successfully");
+                            
+                            // Add a loading message
+                            const loadingMsg = $('<div>')
+                                .addClass('alert alert-info text-center position-absolute w-100 h-100')
+                                .css({
+                                    'top': 0, 
+                                    'left': 0, 
+                                    'display': 'flex',
+                                    'align-items': 'center',
+                                    'justify-content': 'center',
+                                    'background': 'rgba(255,255,255,0.8)',
+                                    'z-index': 1000
+                                })
+                                .html(`
+                                    <div>
+                                        <div class="spinner-border text-primary mb-3" role="status"></div>
+                                        <p class="mb-0">Rendering anomaly detection visualization...</p>
+                                        <p class="small text-muted">This may take a few moments for complex data.</p>
+                                    </div>
+                                `);
+                            anomalyDiv.append(loadingMsg);
+                            
+                            // Set a timeout to prevent hanging
+                            const renderTimeout = setTimeout(() => {
+                                if (loadingMsg) {
+                                    loadingMsg.html(`
+                                        <div class="text-danger">
+                                            <i class="fas fa-exclamation-triangle fa-2x mb-3"></i>
+                                            <p>Rendering timed out. The visualization may be too complex.</p>
+                                            <p>Try selecting a single column with fewer data points.</p>
+                                        </div>
+                                    `);
+                                }
+                            }, 10000); // 10-second timeout
+                            
+                            // Render after a small delay to allow the UI to update
+                            setTimeout(() => {
+                                try {
+                                    // Create a custom config with displayModeBar set to true
+                                    const config = {
+                                        displayModeBar: true,
+                                        responsive: true,
+                                        displaylogo: false,
+                                        modeBarButtonsToRemove: [
+                                            'select2d', 'lasso2d', 'autoScale2d',
+                                            'toggleSpikelines', 'hoverClosestCartesian'
+                                        ]
+                                    };
+                                    
+                                    // Add custom CSS classes to plot elements
+                                    if (anomalyData.data) {
+                                        // Apply custom styling to specific trace elements
+                                        anomalyData.data.forEach(trace => {
+                                            if (trace.name === 'Anomalies') {
+                                                trace.marker = trace.marker || {};
+                                                trace.marker.size = 10;
+                                                trace.marker.color = 'rgba(255, 255, 255, 0)'; // Transparent center
+                                                trace.marker.line = {
+                                                    color: 'rgba(220, 20, 60, 1)', // Red outline
+                                                    width: 2
+                                                };
+                                            }
+                                            else if (trace.name === 'Normal Points') {
+                                                trace.marker = trace.marker || {};
+                                                trace.marker.size = 6;
+                                                trace.marker.color = 'rgba(70, 130, 180, 0.6)'; // Steel blue
+                                            }
+                                            else if (trace.name === 'Median') {
+                                                trace.line = trace.line || {};
+                                                trace.line.color = 'rgb(70, 130, 180)'; // Darker blue
+                                                trace.line.width = 2;
+                                                trace.line.dash = 'solid';
+                                            }
+                                        });
+                                    }
+                                    
+                                    // Set a light background color for the plot
+                                    if (anomalyData.layout) {
+                                        anomalyData.layout.paper_bgcolor = 'rgb(250, 250, 252)';
+                                        anomalyData.layout.plot_bgcolor = 'rgb(250, 250, 252)';
+                                        anomalyData.layout.font = {
+                                            family: 'Arial, sans-serif',
+                                            size: 12,
+                                            color: '#333'
+                                        };
+                                        
+                                        // Customize the shapes (shaded areas and lines)
+                                        if (anomalyData.layout.shapes) {
+                                            anomalyData.layout.shapes.forEach(shape => {
+                                                if (shape.type === 'rect') {
+                                                    // This is the blue highlight area between thresholds
+                                                    shape.fillcolor = 'rgba(65, 105, 225, 0.1)';
+                                                    shape.line = { width: 0 };
+                                                    shape.layer = 'below';
+                                                } else if (shape.type === 'line') {
+                                                    // These are the threshold lines
+                                                    shape.line = {
+                                                        color: 'rgba(220, 20, 60, 0.7)',
+                                                        width: 2,
+                                                        dash: 'dot'
+                                                    };
+                                                }
+                                            });
+                                        }
+                                        
+                                        // Enhance the title and appearance
+                                        if (anomalyData.layout.title) {
+                                            if (typeof anomalyData.layout.title === 'string') {
+                                                anomalyData.layout.title = {
+                                                    text: anomalyData.layout.title,
+                                                    font: {
+                                                        size: 18,
+                                                        color: '#333',
+                                                        family: 'Arial, sans-serif'
+                                                    }
+                                                };
+                                            } else if (typeof anomalyData.layout.title === 'object') {
+                                                anomalyData.layout.title.font = {
+                                                    size: 18,
+                                                    color: '#333',
+                                                    family: 'Arial, sans-serif'
+                                                };
+                                            }
+                                        }
+                                    }
+                                    
+                                    Plotly.newPlot('anomaly', anomalyData, config)
+                                        .then(() => {
+                                            console.log("Anomaly detection rendered successfully");
+                                            loadingMsg.remove();
+                                            clearTimeout(renderTimeout);
+                                            
+                                            // Add download button
+                                            addDownloadButton('anomaly', 'anomaly_detection', 'plot');
+                                        })
+                                        .catch(err => {
+                                            console.error("Error in Plotly promise:", err);
+                                            loadingMsg.html(`
+                                                <div class="text-danger">
+                                                    <i class="fas fa-exclamation-triangle fa-2x mb-3"></i>
+                                                    <p>Error rendering anomaly detection: ${err.message}</p>
+                                                    <p>Try selecting a single column with fewer data points.</p>
+                                                </div>
+                                            `);
+                                            clearTimeout(renderTimeout);
+                                        });
+                                } catch (err) {
+                                    console.error("Error in Plotly.newPlot:", err);
+                                    loadingMsg.html(`
+                                        <div class="text-danger">
+                                            <i class="fas fa-exclamation-triangle fa-2x mb-3"></i>
+                                            <p>Error rendering anomaly detection: ${err.message}</p>
+                                            <p>Try selecting a single column with fewer data points.</p>
+                                        </div>
+                                    `);
+                                    clearTimeout(renderTimeout);
+                                }
+                            }, 200);
+                            
+                            // Display outlier statistics if available
+                            if (response.outlier_stats) {
+                                const statsDiv = $('<div>').addClass('anomaly-stats mt-4');
+                                
+                                // Get the column to display - either the selected one or the first one in the stats
+                                const columnToShow = columnName || Object.keys(response.outlier_stats)[0];
+                                const stats = response.outlier_stats[columnToShow];
+                                
+                                if (stats) {
+                                    let statsHtml = `
+                                        <h5 class="mb-3">Anomaly Statistics: ${columnToShow}</h5>
+                                        <div class="row">
+                                            <div class="col-md-6">
+                                                <div class="card mb-3">
+                                                    <div class="card-header bg-light">
+                                                        <h6 class="mb-0">Anomaly Summary</h6>
+                                                    </div>
+                                                    <div class="card-body">
+                                                        <table class="table table-sm table-bordered">
+                                                            <tr>
+                                                                <th>Total Anomalies:</th>
+                                                                <td><strong>${stats.count} points</strong> (${stats.percentage.toFixed(1)}%)</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <th>Upper Threshold:</th>
+                                                                <td>${stats.upper_bound.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <th>Lower Threshold:</th>
+                                                                <td>${stats.lower_bound.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <th>Median:</th>
+                                                                <td>${stats.median.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <th>Mean:</th>
+                                                                <td>${stats.mean.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <th>Std Deviation:</th>
+                                                                <td>${stats.std_dev.toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
+                                                            </tr>
+                                                        </table>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <div class="alert alert-info">
+                                                    <h6 class="alert-heading"><i class="fas fa-info-circle me-2"></i>About Anomaly Detection</h6>
+                                                    <hr>
+                                                    <p class="small mb-0">Anomalies (outliers) are detected using the Interquartile Range (IQR) method:</p>
+                                                    <ul class="small mb-0">
+                                                        <li>Values above Q3 + 1.5*IQR are considered upper anomalies</li>
+                                                        <li>Values below Q1 - 1.5*IQR are considered lower anomalies</li>
+                                                        <li>The blue band represents the normal range</li>
+                                                        <li>Red circles represent identified anomalies</li>
+                                                    </ul>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    `;
+                                    
+                                    statsDiv.html(statsHtml);
+                                    anomalyWrapper.append(statsDiv);
+                                }
+                            }
+                        } catch (error) {
+                            console.error("Error in anomaly detection visualization:", error);
+                            anomalyDiv.html(`<div class="alert alert-danger">Error parsing anomaly detection data: ${error.message}</div>`);
+                        }
+                    } else {
+                        // Error or unsupported type
+                        $('#advancedViz').html(`<div class="alert alert-warning m-3">${response.message || 'Visualization not available for this type.'}</div>`);
+                    }
+                },
+                error: function(xhr) {
+                    $('#advancedViz').html(`<div class="alert alert-danger m-3">${xhr.responseJSON?.error || 'An error occurred during visualization.'}</div>`);
+                }
+            });
+        });
+        
+        // Function to add download button to plots
+        function addDownloadButton(plotId, fileName, plotType) {
+            const downloadBtn = $('<button>')
+                .addClass('btn btn-sm btn-outline-primary position-absolute')
+                .css({
+                    'bottom': '10px',
+                    'right': '10px',
+                    'z-index': 1000,
+                    'opacity': 0.8
+                })
+                .html('<i class="fas fa-download me-1"></i> Download')
+                .on('click', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    
+                    const plotEl = document.getElementById(plotId);
+                    if (plotEl) {
+                        Plotly.toImage(plotEl, {format: 'png', width: 1200, height: 800})
+                            .then(function(dataUrl) {
+                                const link = document.createElement('a');
+                                link.href = dataUrl;
+                                link.download = `${fileName}_${plotType}.png`;
+                                link.click();
+                            })
+                            .catch(function(err) {
+                                console.error("Error downloading plot:", err);
+                                alert("Error downloading plot. Please try again.");
+                            });
+                    }
+                });
+            
+            // Add hover effect
+            downloadBtn.hover(
+                function() { $(this).css('opacity', 1); },
+                function() { $(this).css('opacity', 0.8); }
+            );
+            
+            // Add the button to the plot container
+            $(`#${plotId}`).css('position', 'relative').append(downloadBtn);
+        }
+    });
+</script>
+{% endblock %}

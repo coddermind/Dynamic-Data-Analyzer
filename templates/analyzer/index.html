@@ -1,0 +1,200 @@
+{% extends 'analyzer/base.html' %}
+
+{% block title %}Data Analyzer - Home{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h1>{% if user.is_authenticated %}Welcome, {{ user.username }}{% else %}Data Analyzer{% endif %}</h1>
+            {% if user.is_authenticated %}
+            <a href="{% url 'analyzer:upload_dataset' %}" class="btn btn-primary">
+                <i class="fas fa-upload me-1"></i> Upload New Dataset
+            </a>
+            {% endif %}
+        </div>
+
+        {% if user.is_authenticated %}
+            <div class="alert alert-info mb-4">
+                <div class="d-flex">
+                    <div class="me-3">
+                        <i class="fas fa-info-circle fa-2x"></i>
+                    </div>
+                    <div>
+                        <h5>Your Private Workspace</h5>
+                        <p class="mb-0">You're logged in! All datasets you upload are private and only accessible to you.</p>
+                    </div>
+                </div>
+            </div>
+        {% else %}
+            <div class="alert alert-info mb-4">
+                <div class="d-flex">
+                    <div class="me-3">
+                        <i class="fas fa-info-circle fa-2x"></i>
+                    </div>
+                    <div>
+                        <h5>Welcome to Data Analyzer!</h5>
+                        <p class="mb-0">This application requires an account to use. Please <a href="{% url 'login' %}" class="alert-link">log in</a> or <a href="{% url 'register' %}" class="alert-link">register</a> to start uploading and analyzing your datasets.</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="row justify-content-center mt-5">
+                <div class="col-md-6 text-center">
+                    <i class="fas fa-user-lock fa-5x mb-4 text-primary"></i>
+                    <h2>User Authentication Required</h2>
+                    <p class="lead">To protect your data and provide a personalized experience, you need to create an account.</p>
+                    <div class="d-grid gap-2 col-md-8 mx-auto mt-4">
+                        <a href="{% url 'login' %}" class="btn btn-primary btn-lg">
+                            <i class="fas fa-sign-in-alt me-2"></i> Log In
+                        </a>
+                        <a href="{% url 'register' %}" class="btn btn-outline-primary btn-lg">
+                            <i class="fas fa-user-plus me-2"></i> Create Account
+                        </a>
+                    </div>
+                </div>
+            </div>
+        {% endif %}
+
+        {% if user.is_authenticated and datasets %}
+            <div class="row">
+                {% for dataset in datasets %}
+                    <div class="col-lg-4 col-md-6 mb-4">
+                        <div class="card h-100 border-primary">
+                            <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+                                <h5 class="card-title mb-0">{{ dataset.title }}</h5>
+                                <button class="btn btn-sm btn-danger delete-dataset-btn" 
+                                        data-dataset-id="{{ dataset.id }}" 
+                                        data-dataset-title="{{ dataset.title }}"
+                                        title="Delete dataset">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-3 d-flex flex-wrap gap-2">
+                                    <span class="badge bg-info">{{ dataset.file_type|upper }}</span>
+                                    <span class="badge bg-secondary">{{ dataset.created_at|date:"M d, Y" }}</span>
+                                    <span class="badge bg-primary">
+                                        <i class="fas fa-lock me-1"></i> Private
+                                    </span>
+                                </div>
+                                <p><strong>Original:</strong> {{ dataset.original_shape }}</p>
+                                <p><strong>Current:</strong> {{ dataset.current_shape }}</p>
+                                
+                                {% if dataset.has_preprocessing %}
+                                    <div class="alert alert-success py-2">
+                                        <i class="fas fa-check-circle me-1"></i> Preprocessing Applied
+                                    </div>
+                                {% else %}
+                                    <div class="alert alert-warning py-2">
+                                        <i class="fas fa-exclamation-circle me-1"></i> No Preprocessing
+                                    </div>
+                                {% endif %}
+                            </div>
+                            <div class="card-footer d-flex justify-content-between align-items-center bg-light">
+                                <small class="text-muted">Created: {{ dataset.created_at|date:"M d, Y" }}</small>
+                                <div>
+                                    <a href="{% url 'analyzer:download_dataset' dataset.id %}" class="btn btn-sm btn-success" title="Download processed dataset">
+                                        <i class="fas fa-download"></i>
+                                    </a>
+                                    <a href="{% url 'analyzer:preprocess_dataset' dataset.id %}" class="btn btn-sm btn-primary" title="Preprocess">
+                                        <i class="fas fa-cogs"></i>
+                                    </a>
+                                    <a href="{% url 'analyzer:visualize_dataset' dataset.id %}" class="btn btn-sm btn-info" title="Visualize">
+                                        <i class="fas fa-chart-bar"></i>
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                {% endfor %}
+            </div>
+        {% elif user.is_authenticated and not datasets %}
+            <div class="alert alert-info">
+                <i class="fas fa-info-circle me-2"></i> No datasets found. Please upload a dataset to begin analysis.
+            </div>
+            <div class="text-center my-5">
+                <i class="fas fa-cloud-upload-alt fa-5x mb-3 text-muted"></i>
+                <p class="lead">Upload your first dataset to start analyzing and visualizing data.</p>
+                <a href="{% url 'analyzer:upload_dataset' %}" class="btn btn-lg btn-primary mt-3">
+                    <i class="fas fa-upload me-1"></i> Upload Dataset
+                </a>
+            </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Delete Confirmation Modal -->
+{% if user.is_authenticated %}
+<div class="modal fade" id="deleteDatasetModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header bg-danger text-white">
+                <h5 class="modal-title">Delete Dataset</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>Are you sure you want to delete the dataset: <strong id="datasetTitleToDelete"></strong>?</p>
+                <p class="text-danger">This action cannot be undone. All preprocessing settings and data will be lost.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-danger" id="confirmDeleteBtn">Delete Dataset</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+{% if user.is_authenticated %}
+<script>
+    $(document).ready(function() {
+        // Handle delete dataset button clicks
+        $('.delete-dataset-btn').on('click', function() {
+            const datasetId = $(this).data('dataset-id');
+            const datasetTitle = $(this).data('dataset-title');
+            
+            // Set the dataset title in the confirmation modal
+            $('#datasetTitleToDelete').text(datasetTitle);
+            
+            // Set the dataset ID to the confirm button
+            $('#confirmDeleteBtn').data('dataset-id', datasetId);
+            
+            // Show the confirmation modal
+            const deleteModal = new bootstrap.Modal(document.getElementById('deleteDatasetModal'));
+            deleteModal.show();
+        });
+        
+        // Handle confirm delete button click
+        $('#confirmDeleteBtn').on('click', function() {
+            const datasetId = $(this).data('dataset-id');
+            
+            // Show loading state
+            $(this).prop('disabled', true).html('<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Deleting...');
+            
+            // Send delete request
+            $.ajax({
+                url: "/delete/" + datasetId + "/",
+                type: 'POST',
+                success: function(response) {
+                    // Close the modal
+                    bootstrap.Modal.getInstance(document.getElementById('deleteDatasetModal')).hide();
+                    
+                    // Reload the page to show updated dataset list
+                    window.location.reload();
+                },
+                error: function(xhr) {
+                    // Reset button state
+                    $('#confirmDeleteBtn').prop('disabled', false).text('Delete Dataset');
+                    
+                    // Show error message
+                    alert(`Error deleting dataset: ${xhr.responseJSON?.error || 'Unknown error'}`);
+                }
+            });
+        });
+    });
+</script>
+{% endif %}
+{% endblock %} 

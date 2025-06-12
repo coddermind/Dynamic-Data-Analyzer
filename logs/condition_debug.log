@@ -1,0 +1,13 @@
+Initial DataFrame shape: (2059, 20)
+Column settings: {
+  "Year": {
+    "numeric_conditions": [],
+    "value_replacements": []
+  }
+}
+
+Numeric columns: ['Price', 'Year', 'Kilometer', 'Length', 'Width', 'Height', 'Seating Capacity', 'Fuel Tank Capacity']
+Categorical columns: ['Make', 'Model', 'Fuel Type', 'Transmission', 'Location', 'Color', 'Owner', 'Seller Type', 'Engine', 'Max Power', 'Max Torque', 'Drivetrain']
+
+
+Final DataFrame shape after condition filtering: (2059, 20)
