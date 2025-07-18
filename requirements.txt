@@ -1,3 +1,5 @@
+setuptools>=68.0.0
+wheel
 Django==3.2.23
 pandas==2.0.3
 numpy==1.24.4
